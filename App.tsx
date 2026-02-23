@@ -2,7 +2,7 @@ import React, {useState, useEffect, useCallback, useRef} from 'react';
 import {
   SafeAreaView, ScrollView, View, Text, TextInput, TouchableOpacity,
   StyleSheet, Alert, FlatList, Modal, ActivityIndicator, RefreshControl, Platform,
-  PermissionsAndroid,
+  PermissionsAndroid, useColorScheme, Keyboard,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import messaging from '@react-native-firebase/messaging';
@@ -24,7 +24,39 @@ const api = async (path: string, options: any = {}) => {
   return data;
 };
 
-// ── TYPES ─────────────────────────────────────────────────────────────────────
+// ── THEME ─────────────────────────────────────────────────────────────────────
+const LIGHT = {
+  bg:'#F8FAFC', bg2:'#fff', bg3:'#F1F5F9',
+  card:'#fff', cardBorder:'#F1F5F9',
+  text:'#1E293B', text2:'#475569', text3:'#94A3B8',
+  inp:'#F8FAFC', inpBorder:'#E2E8F0',
+  modal:'#fff', overlay:'rgba(0,0,0,0.5)',
+  tabBorder:'#F1F5F9', headerBorder:'#F1F5F9',
+  msgOther:'#fff', msgOtherBorder:'#F1F5F9',
+  systemMsg:'#F1F5F9', btnGray:'#F1F5F9', btnGrayTxt:'#64748B',
+  fmtBtn:'#fff', fmtBtnBorder:'#E2E8F0',
+  memberMenu:'#F8FAFC', memberMenuBorder:'#E2E8F0',
+  rankBar:'#F1F5F9', winBar:'#E2E8F0',
+  chatInput:'#F8FAFC', chatInputBorder:'#E2E8F0',
+};
+const DARK = {
+  bg:'#0F172A', bg2:'#1E293B', bg3:'#334155',
+  card:'#1E293B', cardBorder:'#334155',
+  text:'#F1F5F9', text2:'#CBD5E1', text3:'#64748B',
+  inp:'#334155', inpBorder:'#475569',
+  modal:'#1E293B', overlay:'rgba(0,0,0,0.75)',
+  tabBorder:'#334155', headerBorder:'#334155',
+  msgOther:'#1E293B', msgOtherBorder:'#334155',
+  systemMsg:'#334155', btnGray:'#334155', btnGrayTxt:'#CBD5E1',
+  fmtBtn:'#334155', fmtBtnBorder:'#475569',
+  memberMenu:'#0F172A', memberMenuBorder:'#334155',
+  rankBar:'#334155', winBar:'#475569',
+  chatInput:'#334155', chatInputBorder:'#475569',
+};
+const useTheme = () => {
+  const scheme = useColorScheme();
+  return scheme === 'dark' ? DARK : LIGHT;
+};
 interface User { id:number; username:string; email:string; displayName:string; proficiency?:string; }
 interface Member { id:number; playerId?:number; displayName:string; isGuest:boolean; currentRank:number; totalMatchesPlayed:number; totalMatchesWon:number; totalMatchesLost:number; winRate:number; daysPlayed:number; proficiency?:string; mvpCount?:number; }
 interface Match { id:number; matchNumber:number; member1Id:number; member2Id:number; member1Name:string; member2Name:string; member1Score:number; member2Score:number; winnerId?:number; status:string; member1WinProb:number; member2WinProb:number; team1Name?:string; team2Name?:string; team1Members?:string[]; team2Members?:string[]; }
@@ -105,6 +137,7 @@ const ProfPicker = ({value,onChange}:{value:string;onChange:(v:string)=>void}) =
 
 // ── AUTH ──────────────────────────────────────────────────────────────────────
 const AuthScreen = ({onLogin}:{onLogin:(u:User)=>void}) => {
+  const C = useTheme();
   const [isLogin,setIsLogin]=useState(true);
   const [email,setEmail]=useState('');
   const [username,setUsername]=useState('');
@@ -137,26 +170,26 @@ const AuthScreen = ({onLogin}:{onLogin:(u:User)=>void}) => {
   };
 
   return (
-    <SafeAreaView style={ss.screen}>
+    <SafeAreaView style={[ss.screen,{backgroundColor:C.bg}]}>
       <ScrollView contentContainerStyle={ss.authWrap}>
         <Text style={{fontSize:70,textAlign:'center'}}>🏓</Text>
-        <Text style={{fontSize:28,fontWeight:'900',color:'#1E293B',textAlign:'center',marginTop:6}}>TT PLATFORM</Text>
+        <Text style={{fontSize:28,fontWeight:'900',color:C.text,textAlign:'center',marginTop:6}}>TT PLATFORM</Text>
         {!!error&&<View style={{backgroundColor:'#FEE2E2',borderRadius:10,padding:12,marginBottom:12}}>
           <Text style={{color:'#EF4444',fontSize:12,lineHeight:18}}>{error}</Text>
         </View>}
-        <View style={ss.card}>
-          <Text style={{fontSize:20,fontWeight:'800',color:'#1E293B',marginBottom:14,textAlign:'center'}}>{isLogin?'Sign In':'Create Account'}</Text>
-          {!isLogin&&<><Text style={ss.lbl}>USERNAME</Text><TextInput style={ss.inp} placeholder="username" placeholderTextColor="#aaa" value={username} onChangeText={setUsername} autoCapitalize="none"/></>}
-          <Text style={ss.lbl}>EMAIL</Text>
-          <TextInput style={ss.inp} placeholder="your@email.com" placeholderTextColor="#aaa" value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none"/>
-          <Text style={ss.lbl}>PASSWORD</Text>
-          <TextInput style={ss.inp} placeholder="Password" placeholderTextColor="#aaa" value={password} onChangeText={setPassword} secureTextEntry/>
-          {!isLogin&&<><Text style={ss.lbl}>SKILL LEVEL</Text><ProfPicker value={proficiency} onChange={setProficiency}/></>}
+        <View style={[ss.card,{backgroundColor:C.card}]}>
+          <Text style={{fontSize:20,fontWeight:'800',color:C.text,marginBottom:14,textAlign:'center'}}>{isLogin?'Sign In':'Create Account'}</Text>
+          {!isLogin&&<><Text style={[ss.lbl,{color:C.text3}]}>USERNAME</Text><TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="username" placeholderTextColor={C.text3} value={username} onChangeText={setUsername} autoCapitalize="none"/></>}
+          <Text style={[ss.lbl,{color:C.text3}]}>EMAIL</Text>
+          <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="your@email.com" placeholderTextColor={C.text3} value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none"/>
+          <Text style={[ss.lbl,{color:C.text3}]}>PASSWORD</Text>
+          <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="Password" placeholderTextColor={C.text3} value={password} onChangeText={setPassword} secureTextEntry/>
+          {!isLogin&&<><Text style={[ss.lbl,{color:C.text3}]}>SKILL LEVEL</Text><ProfPicker value={proficiency} onChange={setProficiency}/></>}
           <TouchableOpacity style={[ss.btn,ss.btnBlue,loading&&ss.btnOff]} onPress={submit} disabled={loading}>
             {loading?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>{isLogin?'Login':'Register'}</Text>}
           </TouchableOpacity>
           <TouchableOpacity onPress={()=>{setIsLogin(!isLogin);setError('');}} style={{marginTop:14,alignItems:'center'}}>
-            <Text style={{color:'#64748B',fontSize:14}}>{isLogin?"No account? ":"Have account? "}<Text style={{color:'#007AFF',fontWeight:'700'}}>{isLogin?'Register':'Login'}</Text></Text>
+            <Text style={{color:C.text3,fontSize:14}}>{isLogin?"No account? ":"Have account? "}<Text style={{color:'#007AFF',fontWeight:'700'}}>{isLogin?'Register':'Login'}</Text></Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -469,6 +502,7 @@ const StatsModal = ({memberId,memberName,tournamentId,onClose}:{memberId:number;
 
 // ── TOURNAMENTS LIST ──────────────────────────────────────────────────────────
 const TournamentsScreen = ({user,onSelect,onLogout}:{user:User;onSelect:(t:Tournament)=>void;onLogout:()=>void}) => {
+  const C = useTheme();
   const [list,setList]=useState<Tournament[]>([]);
   const [refreshing,setRefreshing]=useState(false);
   const [modal,setModal]=useState<'create'|'join'|null>(null);
@@ -522,10 +556,10 @@ const TournamentsScreen = ({user,onSelect,onLogout}:{user:User;onSelect:(t:Tourn
 
   const sClr:any={IN_PROGRESS:'#22C55E',ENDED:'#64748B',NO_DAYS:'#94A3B8'};
   return(
-    <SafeAreaView style={ss.screen}>
+    <SafeAreaView style={[ss.screen,{backgroundColor:C.bg}]}>
       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',padding:16,paddingBottom:8}}>
-        <View><Text style={{fontSize:22,fontWeight:'900',color:'#1E293B'}}>🏓 TT Platform</Text>
-        <Text style={{color:'#94A3B8',fontSize:12}}>Hi, {user.displayName}</Text></View>
+        <View><Text style={{fontSize:22,fontWeight:'900',color:C.text}}>🏓 TT Platform</Text>
+        <Text style={{color:C.text3,fontSize:12}}>Hi, {user.displayName}</Text></View>
         <TouchableOpacity onPress={onLogout}><Text style={{color:'#EF4444',fontWeight:'700',fontSize:13}}>Logout</Text></TouchableOpacity>
       </View>
       <View style={{flexDirection:'row',gap:10,paddingHorizontal:16,paddingBottom:8}}>
@@ -535,18 +569,18 @@ const TournamentsScreen = ({user,onSelect,onLogout}:{user:User;onSelect:(t:Tourn
       <FlatList data={list??[]} keyExtractor={t=>String(t.id)}
         contentContainerStyle={{padding:16,gap:10}}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={load}/>}
-        ListEmptyComponent={<Text style={{color:'#94A3B8',textAlign:'center',padding:40}}>No tournaments yet.{'\n'}Create or join one!</Text>}
+        ListEmptyComponent={<Text style={{color:C.text3,textAlign:'center',padding:40}}>No tournaments yet.{'\n'}Create or join one!</Text>}
         renderItem={({item:t})=>(
-          <TouchableOpacity style={ss.card} onPress={()=>onSelect(t)}
+          <TouchableOpacity style={[ss.card,{backgroundColor:C.card,borderColor:C.cardBorder,borderWidth:1}]} onPress={()=>onSelect(t)}
             onLongPress={()=>{ if(t.isAdmin){ setMenuT(t); } }}
             delayLongPress={500}>
             <View style={{flexDirection:'row',alignItems:'center',gap:12}}>
-              <View style={{width:44,height:44,borderRadius:22,backgroundColor:'#EFF6FF',alignItems:'center',justifyContent:'center'}}>
+              <View style={{width:44,height:44,borderRadius:22,backgroundColor:C.bg3,alignItems:'center',justifyContent:'center'}}>
                 <Text style={{color:'#007AFF',fontWeight:'900',fontSize:20}}>{(t.name??'?')[0].toUpperCase()}</Text>
               </View>
               <View style={{flex:1}}>
-                <Text style={{color:'#1E293B',fontWeight:'700',fontSize:15}}>{t.name}</Text>
-                <Text style={{color:'#94A3B8',fontSize:12,marginTop:2}}>{t.memberCount??0} members · {t.daysPlayed??0} sessions</Text>
+                <Text style={{color:C.text,fontWeight:'700',fontSize:15}}>{t.name}</Text>
+                <Text style={{color:C.text3,fontSize:12,marginTop:2}}>{t.memberCount??0} members · {t.daysPlayed??0} sessions</Text>
               </View>
               <View style={{alignItems:'flex-end',gap:4}}>
                 {t.isAdmin&&<View style={ss.admBadge}><Text style={ss.admBadgeTxt}>ADMIN</Text></View>}
@@ -559,14 +593,14 @@ const TournamentsScreen = ({user,onSelect,onLogout}:{user:User;onSelect:(t:Tourn
         )}
       />
       <Modal visible={!!modal} transparent animationType="slide" onRequestClose={()=>setModal(null)}>
-        <View style={ss.overlay}><View style={ss.modal}>
-          <Text style={ss.modalTitle}>{modal==='create'?'Create Tournament':'Join Tournament'}</Text>
-          <Text style={ss.lbl}>NAME</Text>
-          <TextInput style={ss.inp} placeholder="e.g. Office TT League" placeholderTextColor="#aaa" value={name} onChangeText={setName}/>
-          <Text style={ss.lbl}>PASSWORD (optional)</Text>
-          <TextInput style={ss.inp} placeholder="Leave blank for open" placeholderTextColor="#aaa" value={pwd} onChangeText={setPwd} secureTextEntry/>
+        <View style={ss.overlay}><View style={[ss.modal,{backgroundColor:C.modal}]}>
+          <Text style={[ss.modalTitle,{color:C.text}]}>{modal==='create'?'Create Tournament':'Join Tournament'}</Text>
+          <Text style={[ss.lbl,{color:C.text3}]}>NAME</Text>
+          <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="e.g. Office TT League" placeholderTextColor={C.text3} value={name} onChangeText={setName}/>
+          <Text style={[ss.lbl,{color:C.text3}]}>PASSWORD (optional)</Text>
+          <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="Leave blank for open" placeholderTextColor={C.text3} value={pwd} onChangeText={setPwd} secureTextEntry/>
           <View style={{flexDirection:'row',gap:8,marginTop:8}}>
-            <TouchableOpacity style={[ss.btn,ss.btnGray,{flex:1}]} onPress={()=>setModal(null)}><Text style={{color:'#64748B',fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
+            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={()=>setModal(null)}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
             <TouchableOpacity style={[ss.btn,modal==='create'?ss.btnGreen:ss.btnBlue,{flex:1}]} onPress={modal==='create'?create:join}><Text style={ss.btnTxt}>{modal==='create'?'Create':'Join'}</Text></TouchableOpacity>
           </View>
         </View></View>
@@ -575,9 +609,9 @@ const TournamentsScreen = ({user,onSelect,onLogout}:{user:User;onSelect:(t:Tourn
       {/* Admin long-press menu */}
       <Modal visible={!!menuT&&!renameModal} transparent animationType="fade" onRequestClose={()=>setMenuT(null)}>
         <TouchableOpacity style={ss.overlay} activeOpacity={1} onPress={()=>setMenuT(null)}>
-          <View style={[ss.modal,{gap:0,padding:0,overflow:'hidden'}]}>
-            <Text style={{fontSize:16,fontWeight:'800',color:'#1E293B',padding:18,borderBottomWidth:1,borderBottomColor:'#F1F5F9'}}>{menuT?.name}</Text>
-            <TouchableOpacity style={{padding:18,borderBottomWidth:1,borderBottomColor:'#F1F5F9'}} onPress={()=>{setNewName(menuT?.name??'');setRenameModal(true);}}>
+          <View style={[ss.modal,{gap:0,padding:0,overflow:'hidden',backgroundColor:C.modal}]}>
+            <Text style={{fontSize:16,fontWeight:'800',color:C.text,padding:18,borderBottomWidth:1,borderBottomColor:C.cardBorder}}>{menuT?.name}</Text>
+            <TouchableOpacity style={{padding:18,borderBottomWidth:1,borderBottomColor:C.cardBorder}} onPress={()=>{setNewName(menuT?.name??'');setRenameModal(true);}}>
               <Text style={{color:'#007AFF',fontSize:15,fontWeight:'600'}}>✏️  Rename Tournament</Text>
             </TouchableOpacity>
             <TouchableOpacity style={{padding:18}} onPress={doDelete}>
@@ -589,12 +623,12 @@ const TournamentsScreen = ({user,onSelect,onLogout}:{user:User;onSelect:(t:Tourn
 
       {/* Rename modal */}
       <Modal visible={renameModal} transparent animationType="slide" onRequestClose={()=>setRenameModal(false)}>
-        <View style={ss.overlay}><View style={ss.modal}>
-          <Text style={ss.modalTitle}>Rename Tournament</Text>
-          <Text style={ss.lbl}>NEW NAME</Text>
-          <TextInput style={ss.inp} placeholder="Tournament name" placeholderTextColor="#aaa" value={newName} onChangeText={setNewName} autoFocus/>
+        <View style={ss.overlay}><View style={[ss.modal,{backgroundColor:C.modal}]}>
+          <Text style={[ss.modalTitle,{color:C.text}]}>Rename Tournament</Text>
+          <Text style={[ss.lbl,{color:C.text3}]}>NEW NAME</Text>
+          <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="Tournament name" placeholderTextColor={C.text3} value={newName} onChangeText={setNewName} autoFocus/>
           <View style={{flexDirection:'row',gap:8,marginTop:8}}>
-            <TouchableOpacity style={[ss.btn,ss.btnGray,{flex:1}]} onPress={()=>{setRenameModal(false);setMenuT(null);}}><Text style={{color:'#64748B',fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
+            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={()=>{setRenameModal(false);setMenuT(null);}}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
             <TouchableOpacity style={[ss.btn,ss.btnBlue,{flex:1}]} onPress={doRename}><Text style={ss.btnTxt}>Rename</Text></TouchableOpacity>
           </View>
         </View></View>
@@ -605,6 +639,7 @@ const TournamentsScreen = ({user,onSelect,onLogout}:{user:User;onSelect:(t:Tourn
 
 // ── DETAIL SCREEN ─────────────────────────────────────────────────────────────
 const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()=>void;onLogout:()=>void}) => {
+  const C = useTheme();
   const [tab,setTab]=useState<'Today'|'Rankings'|'Members'|'Chat'|'History'>('Today');
   const [detail,setDetail]=useState<TournamentDetail|null>(null);
   const [loading,setLoading]=useState(false);
@@ -635,6 +670,9 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
   const [guestName,setGuestName]=useState('');const [guestProf,setGuestProf]=useState('Intermediate');
   const [msgs,setMsgs]=useState<ChatMsg[]>([]);
   const [chatTxt,setChatTxt]=useState('');
+  const [mentionQuery,setMentionQuery]=useState<string|null>(null);
+  const [mentionStart,setMentionStart]=useState(0);
+  const chatInputRef=useRef<TextInput>(null);
   const chatRef=useRef<FlatList>(null);
   const [aiModal,setAiModal]=useState(false);
   const [aiQ,setAiQ]=useState('');const [aiA,setAiA]=useState('');const [aiLoading,setAiLoading]=useState(false);
@@ -758,27 +796,67 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
     setAiTeam(t2);setAiTeamLoading(false);
   };
 
-  const mvpEntry=endResult?.find(e=>e.isMvp);
+  const onChatChange=(txt:string)=>{
+    setChatTxt(txt);
+    // Detect @mention — find last @ and check if it's being typed
+    const lastAt=txt.lastIndexOf('@');
+    if(lastAt>=0){
+      const afterAt=txt.slice(lastAt+1);
+      // Only show if no space after the @
+      if(!afterAt.includes(' ')&&afterAt.length<=20){
+        setMentionQuery(afterAt.toLowerCase());
+        setMentionStart(lastAt);
+        return;
+      }
+    }
+    setMentionQuery(null);
+  };
+
+  const pickMention=(name:string)=>{
+    const before=chatTxt.slice(0,mentionStart);
+    const after=chatTxt.slice(mentionStart+1+(mentionQuery?.length??0));
+    setChatTxt(`${before}@${name} ${after}`);
+    setMentionQuery(null);
+    chatInputRef.current?.focus();
+  };
+
+  const mentionSuggestions = mentionQuery!==null
+    ? members.filter(m=>m.displayName.toLowerCase().startsWith(mentionQuery) && m.displayName.toLowerCase()!==mentionQuery)
+    : [];
+
+  const renderMsgText=(content:string,isMe:boolean)=>{
+    // Split by @mention pattern and highlight
+    const parts=content.split(/(@\w[\w\s]*)/g);
+    return(
+      <Text style={{color:isMe?'#fff':'#1E293B',fontSize:14}}>
+        {parts.map((part,i)=>
+          part.startsWith('@')
+            ?<Text key={i} style={{color:isMe?'#BFE0FF':'#007AFF',fontWeight:'700'}}>{part}</Text>
+            :<Text key={i}>{part}</Text>
+        )}
+      </Text>
+    );
+  };
 
   return(
-    <SafeAreaView style={ss.screen}>
+    <SafeAreaView style={[ss.screen,{backgroundColor:C.bg}]}>
       {/* Header */}
-      <View style={{flexDirection:'row',alignItems:'center',padding:12,paddingBottom:8,gap:8,backgroundColor:'#fff',borderBottomWidth:1,borderBottomColor:'#F1F5F9'}}>
+      <View style={{flexDirection:'row',alignItems:'center',padding:12,paddingBottom:8,gap:8,backgroundColor:C.bg2,borderBottomWidth:1,borderBottomColor:C.headerBorder}}>
         <TouchableOpacity onPress={onBack} style={{padding:4}}><Text style={{color:'#007AFF',fontSize:16,fontWeight:'700'}}>‹</Text></TouchableOpacity>
         <View style={{flex:1}}>
-          <Text style={{color:'#1E293B',fontWeight:'800',fontSize:15}} numberOfLines={1}>{t.name}</Text>
+          <Text style={{color:C.text,fontWeight:'800',fontSize:15}} numberOfLines={1}>{t.name}</Text>
           {day?.status==='IN_PROGRESS'&&<Text style={{color:'#22C55E',fontSize:11,fontWeight:'600'}}>⏱ {fmtTimer(timer)} · Day {day.dayNumber}</Text>}
         </View>
         {isAdmin&&<View style={ss.admBadge}><Text style={ss.admBadgeTxt}>ADMIN</Text></View>}
-        <TouchableOpacity style={ss.aiBtn} onPress={()=>{setAiA('');setAiQ('');setAiModal(true);}}><Text style={{fontSize:14}}>🤖</Text></TouchableOpacity>
+        <TouchableOpacity style={[ss.aiBtn,{backgroundColor:C.bg3,borderColor:C.inpBorder}]} onPress={()=>{setAiA('');setAiQ('');setAiModal(true);}}><Text style={{fontSize:14}}>🤖</Text></TouchableOpacity>
         <TouchableOpacity onPress={onLogout}><Text style={{color:'#EF4444',fontWeight:'700',fontSize:12}}>Logout</Text></TouchableOpacity>
       </View>
 
       {/* Tabs */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{backgroundColor:'#fff',borderBottomWidth:1,borderBottomColor:'#F1F5F9',maxHeight:44}} contentContainerStyle={{paddingHorizontal:4,alignItems:'center'}}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{backgroundColor:C.bg2,borderBottomWidth:1,borderBottomColor:C.tabBorder,maxHeight:44}} contentContainerStyle={{paddingHorizontal:4,alignItems:'center'}}>
         {(['Today','Rankings','Members','Chat','History'] as const).map(tb=>(
           <TouchableOpacity key={tb} style={[{paddingHorizontal:14,paddingVertical:10},tab===tb&&{borderBottomWidth:2,borderBottomColor:'#007AFF'}]} onPress={()=>setTab(tb)}>
-            <Text style={{color:tab===tb?'#007AFF':'#94A3B8',fontWeight:'600',fontSize:13}}>{tb}</Text>
+            <Text style={{color:tab===tb?'#007AFF':C.text3,fontWeight:'600',fontSize:13}}>{tb}</Text>
           </TouchableOpacity>
         ))}
       </ScrollView>
@@ -801,21 +879,21 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
             </View>
           </View>}
 
-          {!day&&<Text style={{color:'#94A3B8',textAlign:'center',padding:20}}>{isAdmin?'Tap "Start Day Session" to begin.':'No active session.'}</Text>}
+          {!day&&<Text style={{color:C.text3,textAlign:'center',padding:20}}>{isAdmin?'Tap "Start Day Session" to begin.':'No active session.'}</Text>}
           {day?.status==='ENDED'&&<View style={[ss.card,{backgroundColor:'#DCFCE7'}]}><Text style={{color:'#16A34A',fontWeight:'700',textAlign:'center'}}>✅ Day {day.dayNumber} completed!{day.mvpName?' 🏆 MVP: '+day.mvpName:''}</Text></View>}
 
           {day?.status==='IN_PROGRESS'&&<>
             {(day.teams??[]).length>0&&<>
-              <Text style={ss.secLbl}>TEAMS</Text>
+              <Text style={[ss.secLbl,{color:C.text3}]}>TEAMS</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                 <View style={{flexDirection:'row',gap:8}}>
                   {(day.teams??[]).map((team,ti)=>(
-                    <View key={team.id} style={[ss.card,{minWidth:140,borderLeftWidth:4,borderLeftColor:ti===0?'#007AFF':'#5856D6'}]}>
+                    <View key={team.id} style={[ss.card,{backgroundColor:C.card,minWidth:140,borderLeftWidth:4,borderLeftColor:ti===0?'#007AFF':'#5856D6'}]}>
                       <Text style={{color:ti===0?'#007AFF':'#5856D6',fontWeight:'800',fontSize:13}}>{team.name}</Text>
-                      <Text style={{color:'#94A3B8',fontSize:11,marginBottom:4}}>{team.matchesWon}W {team.matchesLost}L</Text>
+                      <Text style={{color:C.text3,fontSize:11,marginBottom:4}}>{team.matchesWon}W {team.matchesLost}L</Text>
                       {(team.members??[]).map(m=>(
                         <View key={m.id} style={{flexDirection:'row',alignItems:'center',gap:3,paddingVertical:1}}>
-                          <Text style={{fontSize:11,color:'#475569'}}>#{m.currentRank??'?'} {m.displayName}</Text>
+                          <Text style={{fontSize:11,color:C.text2}}>#{m.currentRank??'?'} {m.displayName}</Text>
                           <ProfBadge p={m.proficiency}/>
                         </View>
                       ))}
@@ -825,7 +903,7 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
               </ScrollView>
             </>}
 
-            <Text style={ss.secLbl}>MATCHES ({(day.matches??[]).filter(m=>m.status==='COMPLETED').length}/{(day.matches??[]).length} done)</Text>
+            <Text style={[ss.secLbl,{color:C.text3}]}>MATCHES ({(day.matches??[]).filter(m=>m.status==='COMPLETED').length}/{(day.matches??[]).length} done)</Text>
             {(day.matches??[]).map(m=>{
               const is2v2 = m.team1Members && m.team1Members.length > 1;
               const side1 = is2v2 ? m.team1Members!.join(' & ') : m.member1Name;
@@ -833,18 +911,18 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
               const side1Won = !!m.winnerId && m.winnerId === m.member1Id;
               const side2Won = !!m.winnerId && m.winnerId === m.member2Id;
               return (
-              <View key={m.id} style={[ss.card,m.status==='IN_PROGRESS'&&{borderLeftWidth:3,borderLeftColor:'#EF4444'}]}>
+              <View key={m.id} style={[ss.card,{backgroundColor:C.card},m.status==='IN_PROGRESS'&&{borderLeftWidth:3,borderLeftColor:'#EF4444'}]}>
                 <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
-                  <Text style={{color:'#94A3B8',fontSize:11,width:28}}>#{m.matchNumber}</Text>
+                  <Text style={{color:C.text3,fontSize:11,width:28}}>#{m.matchNumber}</Text>
                   <View style={{flex:1,alignItems:'center'}}>
                     {is2v2&&<Text style={{color:'#7C3AED',fontSize:9,fontWeight:'700',marginBottom:2}}>2v2 DOUBLES</Text>}
-                    <Text style={[{color:'#475569',fontSize:13,textAlign:'center'},side1Won&&{color:'#22C55E',fontWeight:'700'}]}>{side1}</Text>
+                    <Text style={[{color:C.text2,fontSize:13,textAlign:'center'},side1Won&&{color:'#22C55E',fontWeight:'700'}]}>{side1}</Text>
                     {m.status==='COMPLETED'
-                      ?<Text style={{color:'#1E293B',fontWeight:'900',fontSize:22}}>{m.member1Score} — {m.member2Score}</Text>
+                      ?<Text style={{color:C.text,fontWeight:'900',fontSize:22}}>{m.member1Score} — {m.member2Score}</Text>
                       :m.status==='IN_PROGRESS'
                         ?<View style={{backgroundColor:'#FEE2E2',paddingHorizontal:8,paddingVertical:2,borderRadius:6}}><Text style={{color:'#EF4444',fontSize:10,fontWeight:'800'}}>LIVE</Text></View>
-                        :<Text style={{color:'#CBD5E1',fontSize:12}}>vs</Text>}
-                    <Text style={[{color:'#475569',fontSize:13,textAlign:'center'},side2Won&&{color:'#22C55E',fontWeight:'700'}]}>{side2}</Text>
+                        :<Text style={{color:C.text3,fontSize:12}}>vs</Text>}
+                    <Text style={[{color:C.text2,fontSize:13,textAlign:'center'},side2Won&&{color:'#22C55E',fontWeight:'700'}]}>{side2}</Text>
                   </View>
                   <View style={{alignItems:'flex-end',gap:2}}>
                     {m.status!=='COMPLETED'&&<Text style={{color:'#7C3AED',fontSize:9}}>{(m.member1WinProb??50).toFixed(0)}%</Text>}
@@ -852,14 +930,14 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
                   </View>
                 </View>
                 {canScore&&m.status!=='COMPLETED'&&(
-                  <TouchableOpacity style={{marginTop:8,paddingTop:8,borderTopWidth:1,borderTopColor:'#F1F5F9'}} onPress={()=>{setShowResult(m);setS1('');setS2('');}}>
+                  <TouchableOpacity style={{marginTop:8,paddingTop:8,borderTopWidth:1,borderTopColor:C.cardBorder}} onPress={()=>{setShowResult(m);setS1('');setS2('');}}>
                     <Text style={{color:'#007AFF',fontSize:13,fontWeight:'600'}}>📝 Submit Score</Text>
                   </TouchableOpacity>
                 )}
               </View>
               );
             })}
-            {(day.matches??[]).length===0&&<Text style={{color:'#94A3B8',textAlign:'center',padding:16}}>No matches scheduled</Text>}
+            {(day.matches??[]).length===0&&<Text style={{color:C.text3,textAlign:'center',padding:16}}>No matches scheduled</Text>}
           </>}
         </ScrollView>
       )}
@@ -869,22 +947,22 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
         <FlatList data={detail?.rankings??[]} keyExtractor={r=>String(r.memberId)}
           contentContainerStyle={{padding:14,gap:8}} onRefresh={load} refreshing={loading}
           ListHeaderComponent={<View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-            <View><Text style={ss.secLbl}>RANKED BY WINS/MATCHES</Text><Text style={{color:'#94A3B8',fontSize:10}}>More wins per match = higher rank</Text></View>
+            <View><Text style={[ss.secLbl,{color:C.text3}]}>RANKED BY WINS/MATCHES</Text><Text style={{color:C.text3,fontSize:10}}>More wins per match = higher rank</Text></View>
             {isAdmin&&<TouchableOpacity style={[ss.smBtn,{borderColor:'#007AFF'}]} onPress={()=>{const e:any={};(detail?.rankings??[]).forEach(r=>e[r.memberId]=String(r.rank));setRankEdits(e);setShowRankEditor(true);}}><Text style={{color:'#007AFF',fontSize:11,fontWeight:'700'}}>✏ Edit</Text></TouchableOpacity>}
           </View>}
           renderItem={({item:r,index})=>(
-            <View style={ss.card}>
+            <View style={[ss.card,{backgroundColor:C.card}]}>
               <View style={{flexDirection:'row',alignItems:'center',gap:10}}>
                 <Text style={{fontSize:18,width:32,textAlign:'center'}}>{index===0?'🥇':index===1?'🥈':index===2?'🥉':`#${r.rank}`}</Text>
                 <View style={{flex:1}}>
                   <View style={{flexDirection:'row',alignItems:'center',gap:5,flexWrap:'wrap'}}>
-                    <Text style={{color:'#1E293B',fontWeight:'700',fontSize:14}}>{r.displayName}</Text>
+                    <Text style={{color:C.text,fontWeight:'700',fontSize:14}}>{r.displayName}</Text>
                     {r.isGuest&&<View style={ss.gTag}><Text style={ss.gTagTxt}>GUEST</Text></View>}
                     <ProfBadge p={r.proficiency}/>
                     {(r.mvpCount??0)>0&&<View style={{backgroundColor:'#FEF9C3',paddingHorizontal:5,paddingVertical:1,borderRadius:4}}><Text style={{color:'#CA8A04',fontSize:9,fontWeight:'800'}}>🏆×{r.mvpCount}</Text></View>}
                   </View>
-                  <Text style={{color:'#94A3B8',fontSize:11,marginTop:2}}>{r.totalMatchesWon}W / {r.totalMatchesPlayed} played · {r.daysPlayed}d</Text>
-                  <View style={{height:6,backgroundColor:'#F1F5F9',borderRadius:4,marginTop:4,overflow:'hidden'}}>
+                  <Text style={{color:C.text3,fontSize:11,marginTop:2}}>{r.totalMatchesWon}W / {r.totalMatchesPlayed} played · {r.daysPlayed}d</Text>
+                  <View style={{height:6,backgroundColor:C.winBar,borderRadius:4,marginTop:4,overflow:'hidden'}}>
                     <View style={{height:'100%',width:`${r.totalMatchesPlayed?Math.min(100,r.totalMatchesWon/r.totalMatchesPlayed*100):0}%`,backgroundColor:'#22C55E',borderRadius:4}}/>
                   </View>
                 </View>
@@ -906,35 +984,35 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
         <FlatList data={members} keyExtractor={m=>String(m.id)}
           contentContainerStyle={{padding:14,gap:8}} onRefresh={load} refreshing={loading}
           ListHeaderComponent={<View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-            <Text style={ss.secLbl}>MEMBERS ({members.length})</Text>
+            <Text style={[ss.secLbl,{color:C.text3}]}>MEMBERS ({members.length})</Text>
             {isAdmin&&<View style={{flexDirection:'row',gap:6}}>
               <TouchableOpacity style={[ss.smBtn,{borderColor:'#EAB308'}]} onPress={()=>setShowGuest(true)}><Text style={{color:'#EAB308',fontSize:11,fontWeight:'700'}}>+ Guest</Text></TouchableOpacity>
               <TouchableOpacity style={[ss.smBtn,{borderColor:'#007AFF'}]} onPress={()=>setShowAdmins(true)}><Text style={{color:'#007AFF',fontSize:11,fontWeight:'700'}}>Admins</Text></TouchableOpacity>
             </View>}
           </View>}
           renderItem={({item:m})=>(
-            <View style={ss.card}>
+            <View style={[ss.card,{backgroundColor:C.card}]}>
               <View style={{flexDirection:'row',alignItems:'center',gap:10}}>
-                <View style={{width:40,height:40,borderRadius:20,backgroundColor:'#EFF6FF',alignItems:'center',justifyContent:'center'}}>
+                <View style={{width:40,height:40,borderRadius:20,backgroundColor:C.bg3,alignItems:'center',justifyContent:'center'}}>
                   <Text style={{color:'#007AFF',fontWeight:'800',fontSize:16}}>{(m.displayName??'?')[0].toUpperCase()}</Text>
                 </View>
                 <View style={{flex:1}}>
                   <View style={{flexDirection:'row',alignItems:'center',gap:5,flexWrap:'wrap'}}>
-                    <Text style={{color:'#1E293B',fontWeight:'700'}}>{m.displayName}</Text>
+                    <Text style={{color:C.text,fontWeight:'700'}}>{m.displayName}</Text>
                     {m.isGuest&&<View style={ss.gTag}><Text style={ss.gTagTxt}>GUEST</Text></View>}
                     {(detail?.admins??[]).some(a=>a.playerId===m.playerId)&&<View style={ss.admBadge}><Text style={ss.admBadgeTxt}>ADMIN</Text></View>}
                     <ProfBadge p={m.proficiency}/>
                     {(m.mvpCount??0)>0&&<Text style={{color:'#CA8A04',fontSize:10}}>🏆×{m.mvpCount}</Text>}
                   </View>
-                  <Text style={{color:'#94A3B8',fontSize:11,marginTop:2}}>#{m.currentRank??'?'} · {m.totalMatchesWon}W/{m.totalMatchesPlayed} · {m.daysPlayed}d</Text>
+                  <Text style={{color:C.text3,fontSize:11,marginTop:2}}>#{m.currentRank??'?'} · {m.totalMatchesWon}W/{m.totalMatchesPlayed} · {m.daysPlayed}d</Text>
                 </View>
                 <TouchableOpacity onPress={()=>setMemberMenuId(memberMenuId===m.id?null:m.id)} style={{padding:6}}>
-                  <Text style={{fontSize:20,color:'#64748B'}}>⋮</Text>
+                  <Text style={{fontSize:20,color:C.text3}}>⋮</Text>
                 </TouchableOpacity>
               </View>
-              {memberMenuId===m.id&&<View style={{backgroundColor:'#F8FAFC',borderRadius:10,marginTop:10,overflow:'hidden',borderWidth:1,borderColor:'#E2E8F0'}}>
-                <TouchableOpacity style={{padding:12,borderBottomWidth:1,borderBottomColor:'#E2E8F0'}} onPress={()=>{setStatsModal({id:m.id,name:m.displayName});setMemberMenuId(null);}}><Text style={{color:'#007AFF',fontWeight:'600'}}>📊 View Stats</Text></TouchableOpacity>
-                {isAdmin&&<TouchableOpacity style={{padding:12,borderBottomWidth:1,borderBottomColor:'#E2E8F0'}} onPress={()=>{setProfEditMember(m);setProfEditValue(m.proficiency||'Intermediate');setMemberMenuId(null);}}><Text style={{color:'#7C3AED',fontWeight:'600'}}>🎯 Update Skill Level</Text></TouchableOpacity>}
+              {memberMenuId===m.id&&<View style={{backgroundColor:C.memberMenu,borderRadius:10,marginTop:10,overflow:'hidden',borderWidth:1,borderColor:C.memberMenuBorder}}>
+                <TouchableOpacity style={{padding:12,borderBottomWidth:1,borderBottomColor:C.memberMenuBorder}} onPress={()=>{setStatsModal({id:m.id,name:m.displayName});setMemberMenuId(null);}}><Text style={{color:'#007AFF',fontWeight:'600'}}>📊 View Stats</Text></TouchableOpacity>
+                {isAdmin&&<TouchableOpacity style={{padding:12,borderBottomWidth:1,borderBottomColor:C.memberMenuBorder}} onPress={()=>{setProfEditMember(m);setProfEditValue(m.proficiency||'Intermediate');setMemberMenuId(null);}}><Text style={{color:'#7C3AED',fontWeight:'600'}}>🎯 Update Skill Level</Text></TouchableOpacity>}
                 {isAdmin&&<TouchableOpacity style={{padding:12}} onPress={()=>removeMember(m)}><Text style={{color:'#EF4444',fontWeight:'600'}}>🗑 Remove Member</Text></TouchableOpacity>}
               </View>}
             </View>
@@ -943,30 +1021,55 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
       )}
 
       {/* CHAT */}
-      {tab==='Chat'&&<View style={{flex:1}}>
+      {tab==='Chat'&&<View style={{flex:1,backgroundColor:C.bg}}>
         <FlatList ref={chatRef} data={msgs??[]} keyExtractor={m=>String(m.id)} contentContainerStyle={{padding:10,gap:6}}
           renderItem={({item:m})=>{
             const sys=m.type!=='TEXT',me=m.senderId===user.id;
-            const bg:any={MATCH_RESULT:'#DCFCE7',DAY_STARTED:'#DBEAFE',DAY_ENDED:'#FEF9C3',SYSTEM:'#F1F5F9'};
-            const fg:any={MATCH_RESULT:'#16A34A',DAY_STARTED:'#1D4ED8',DAY_ENDED:'#CA8A04',SYSTEM:'#64748B'};
+            const bg:any={MATCH_RESULT:'#DCFCE7',DAY_STARTED:'#DBEAFE',DAY_ENDED:'#FEF9C3',SYSTEM:C.systemMsg};
+            const fg:any={MATCH_RESULT:'#16A34A',DAY_STARTED:'#1D4ED8',DAY_ENDED:'#CA8A04',SYSTEM:C.text3};
             if(sys)return(<View style={{alignItems:'center',marginVertical:3}}>
-              <View style={{backgroundColor:bg[m.type]||'#F1F5F9',paddingHorizontal:12,paddingVertical:6,borderRadius:16,maxWidth:'88%'}}>
-                <Text style={{color:fg[m.type]||'#64748B',fontSize:12,fontWeight:'600',textAlign:'center'}}>{m.content}</Text>
-                <Text style={{color:'#94A3B8',fontSize:9,textAlign:'center',marginTop:2}}>{fmtDateTime(m.sentAt)}</Text>
+              <View style={{backgroundColor:bg[m.type]||C.systemMsg,paddingHorizontal:12,paddingVertical:6,borderRadius:16,maxWidth:'88%'}}>
+                <Text style={{color:fg[m.type]||C.text3,fontSize:12,fontWeight:'600',textAlign:'center'}}>{m.content}</Text>
+                <Text style={{color:C.text3,fontSize:9,textAlign:'center',marginTop:2}}>{fmtDateTime(m.sentAt)}</Text>
               </View></View>);
             return(<View style={{flexDirection:me?'row-reverse':'row',gap:8,alignItems:'flex-end'}}>
-              {!me&&<View style={{width:26,height:26,borderRadius:13,backgroundColor:'#EFF6FF',alignItems:'center',justifyContent:'center'}}><Text style={{color:'#007AFF',fontWeight:'800',fontSize:11}}>{(m.senderName??'?')[0]}</Text></View>}
-              <View style={{maxWidth:'75%',paddingHorizontal:12,paddingVertical:8,borderRadius:16,backgroundColor:me?'#007AFF':'#fff',borderWidth:me?0:1,borderColor:'#F1F5F9',borderBottomRightRadius:me?4:16,borderBottomLeftRadius:me?16:4}}>
+              {!me&&<View style={{width:26,height:26,borderRadius:13,backgroundColor:C.bg3,alignItems:'center',justifyContent:'center'}}><Text style={{color:'#007AFF',fontWeight:'800',fontSize:11}}>{(m.senderName??'?')[0]}</Text></View>}
+              <View style={{maxWidth:'75%',paddingHorizontal:12,paddingVertical:8,borderRadius:16,backgroundColor:me?'#007AFF':C.msgOther,borderWidth:me?0:1,borderColor:C.msgOtherBorder,borderBottomRightRadius:me?4:16,borderBottomLeftRadius:me?16:4}}>
                 {!me&&<Text style={{color:'#007AFF',fontWeight:'700',fontSize:11,marginBottom:2}}>{m.senderName}</Text>}
-                <Text style={{color:me?'#fff':'#1E293B',fontSize:14}}>{m.content}</Text>
+                {renderMsgText(m.content,me)}
                 <Text style={{color:me?'rgba(255,255,255,0.6)':'#CBD5E1',fontSize:9,marginTop:3,alignSelf:'flex-end'}}>{fmtDateTime(m.sentAt)}</Text>
               </View></View>);
           }}
-          ListEmptyComponent={<Text style={{color:'#94A3B8',textAlign:'center',padding:30}}>No messages yet</Text>}
+          ListEmptyComponent={<Text style={{color:C.text3,textAlign:'center',padding:30}}>No messages yet</Text>}
         />
-        <View style={{flexDirection:'row',padding:8,gap:8,backgroundColor:'#fff',borderTopWidth:1,borderTopColor:'#F1F5F9',alignItems:'flex-end'}}>
-          <TextInput style={{flex:1,backgroundColor:'#F8FAFC',borderRadius:20,paddingHorizontal:14,paddingVertical:9,color:'#1E293B',fontSize:14,borderWidth:1,borderColor:'#E2E8F0',maxHeight:100}} placeholder="Message..." placeholderTextColor="#aaa" value={chatTxt} onChangeText={setChatTxt} multiline/>
-          <TouchableOpacity style={{width:42,height:42,borderRadius:21,backgroundColor:chatTxt.trim()?'#007AFF':'#CBD5E1',alignItems:'center',justifyContent:'center'}} onPress={sendMsg} disabled={!chatTxt.trim()}>
+        <View style={{flexDirection:'row',padding:8,gap:8,backgroundColor:C.bg2,borderTopWidth:1,borderTopColor:C.tabBorder,alignItems:'flex-end'}}>
+          <View style={{flex:1}}>
+            {mentionSuggestions.length>0&&(
+              <View style={{backgroundColor:C.card,borderRadius:12,borderWidth:1,borderColor:C.inpBorder,marginBottom:6,maxHeight:160,overflow:'hidden'}}>
+                <ScrollView keyboardShouldPersistTaps="always">
+                  {mentionSuggestions.map(m=>(
+                    <TouchableOpacity key={m.id} style={{flexDirection:'row',alignItems:'center',gap:10,padding:10,borderBottomWidth:1,borderBottomColor:C.cardBorder}} onPress={()=>pickMention(m.displayName)}>
+                      <View style={{width:28,height:28,borderRadius:14,backgroundColor:'#EFF6FF',alignItems:'center',justifyContent:'center'}}>
+                        <Text style={{color:'#007AFF',fontWeight:'800',fontSize:12}}>{m.displayName[0].toUpperCase()}</Text>
+                      </View>
+                      <Text style={{color:C.text,fontWeight:'600'}}>@{m.displayName}</Text>
+                      <ProfBadge p={m.proficiency}/>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+            )}
+            <TextInput
+              ref={chatInputRef}
+              style={{backgroundColor:C.chatInput,borderRadius:20,paddingHorizontal:14,paddingVertical:9,color:C.text,fontSize:14,borderWidth:1,borderColor:C.chatInputBorder,maxHeight:100}}
+              placeholder="Message... (type @ to mention)"
+              placeholderTextColor={C.text3}
+              value={chatTxt}
+              onChangeText={onChatChange}
+              multiline
+            />
+          </View>
+          <TouchableOpacity style={{width:42,height:42,borderRadius:21,backgroundColor:chatTxt.trim()?'#007AFF':C.bg3,alignItems:'center',justifyContent:'center'}} onPress={sendMsg} disabled={!chatTxt.trim()}>
             <Text style={{color:'#fff',fontWeight:'700'}}>➤</Text>
           </TouchableOpacity>
         </View>
@@ -978,31 +1081,30 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
         keyExtractor={d=>String(d.id)}
         contentContainerStyle={{padding:14,gap:10}}
         onRefresh={load} refreshing={loading}
-        ListHeaderComponent={<Text style={ss.secLbl}>PAST SESSIONS</Text>}
-        ListEmptyComponent={<Text style={{color:'#94A3B8',textAlign:'center',padding:30}}>No completed sessions yet</Text>}
+        ListHeaderComponent={<Text style={[ss.secLbl,{color:C.text3}]}>PAST SESSIONS</Text>}
+        ListEmptyComponent={<Text style={{color:C.text3,textAlign:'center',padding:30}}>No completed sessions yet</Text>}
         renderItem={({item:d})=>{
           const total=(d.matches??[]).length;
           const done=(d.matches??[]).filter(m=>m.status==='COMPLETED').length;
           return(
-            <View style={ss.card}>
+            <View style={[ss.card,{backgroundColor:C.card}]}>
               <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
-                <Text style={{color:'#1E293B',fontWeight:'800',fontSize:15}}>Day {d.dayNumber}</Text>
-                <Text style={{color:'#94A3B8',fontSize:12}}>{fmtDate(d.endedAt??d.startedAt)}</Text>
+                <Text style={{color:C.text,fontWeight:'800',fontSize:15}}>Day {d.dayNumber}</Text>
+                <Text style={{color:C.text3,fontSize:12}}>{fmtDate(d.endedAt??d.startedAt)}</Text>
               </View>
               <View style={{flexDirection:'row',gap:10,flexWrap:'wrap',marginBottom:6}}>
-                <Text style={{color:'#64748B',fontSize:12}}>👥 {(d.presentMembers??[]).length}</Text>
-                <Text style={{color:'#64748B',fontSize:12}}>🏓 {done}/{total}</Text>
-                <Text style={{color:'#64748B',fontSize:12}}>⏱ {fmtTimer(d.timerSeconds??0)}</Text>
+                <Text style={{color:C.text2,fontSize:12}}>👥 {(d.presentMembers??[]).length}</Text>
+                <Text style={{color:C.text2,fontSize:12}}>🏓 {done}/{total}</Text>
+                <Text style={{color:C.text2,fontSize:12}}>⏱ {fmtTimer(d.timerSeconds??0)}</Text>
               </View>
-              {/* MVP shown in history */}
               {d.mvpName&&<View style={{backgroundColor:'#FEF9C3',borderRadius:8,paddingHorizontal:10,paddingVertical:6,marginBottom:8,flexDirection:'row',alignItems:'center',gap:6}}>
                 <Text style={{fontSize:16}}>🏆</Text>
                 <Text style={{color:'#CA8A04',fontWeight:'700',fontSize:13}}>MVP: {d.mvpName}</Text>
               </View>}
               <View style={{flexDirection:'row',flexWrap:'wrap',gap:4}}>
                 {(d.presentMembers??[]).map(m=>(
-                  <TouchableOpacity key={m.id} onPress={()=>setStatsModal({id:m.id,name:m.displayName})} style={{backgroundColor:'#F1F5F9',paddingHorizontal:8,paddingVertical:3,borderRadius:6}}>
-                    <Text style={{color:'#475569',fontSize:11,fontWeight:'600'}}>{m.displayName}</Text>
+                  <TouchableOpacity key={m.id} onPress={()=>setStatsModal({id:m.id,name:m.displayName})} style={{backgroundColor:C.bg3,paddingHorizontal:8,paddingVertical:3,borderRadius:6}}>
+                    <Text style={{color:C.text2,fontSize:11,fontWeight:'600'}}>{m.displayName}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -1022,14 +1124,14 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
             <Text style={{color:'#CA8A04',fontWeight:'900',fontSize:18}}>MVP: {mvpEntry.displayName}</Text>
             <Text style={{color:'#92400E',fontSize:12}}>{mvpEntry.matchesWon}W/{mvpEntry.matchesWon+(mvpEntry.matchesLost??0)} · {mvpEntry.pointsScored}pts</Text>
           </View>}
-          {!mvpEntry&&(endResult??[]).length>0&&<Text style={{color:'#94A3B8',textAlign:'center',marginBottom:10,fontSize:12}}>No MVP (no completed matches)</Text>}
+          {!mvpEntry&&(endResult??[]).length>0&&<Text style={{color:C.text3,textAlign:'center',marginBottom:10,fontSize:12}}>No MVP (no completed matches)</Text>}
           <ScrollView style={{maxHeight:340}}>
             {(endResult??[]).sort((a,b)=>a.rank-b.rank).map((e,i)=>(
-              <View key={e.memberId} style={{flexDirection:'row',alignItems:'center',gap:10,paddingVertical:9,borderBottomWidth:1,borderBottomColor:'#F8FAFC'}}>
+              <View key={e.memberId} style={{flexDirection:'row',alignItems:'center',gap:10,paddingVertical:9,borderBottomWidth:1,borderBottomColor:C.cardBorder}}>
                 <Text style={{width:28,textAlign:'center',fontSize:14}}>{i===0?'🥇':i===1?'🥈':i===2?'🥉':`#${e.rank}`}</Text>
-                <Text style={{flex:1,color:'#1E293B',fontWeight:'700'}}>{e.displayName}{e.isMvp?' 🏆':''}</Text>
+                <Text style={{flex:1,color:C.text,fontWeight:'700'}}>{e.displayName}{e.isMvp?' 🏆':''}</Text>
                 <Text style={{color:'#22C55E',fontWeight:'700',fontSize:13}}>{e.matchesWon}W</Text>
-                <Text style={{color:(e.rankChange??0)>0?'#22C55E':(e.rankChange??0)<0?'#EF4444':'#94A3B8',fontWeight:'800',fontSize:12}}>{(e.rankChange??0)>0?'▲':(e.rankChange??0)<0?'▼':'–'}{(e.rankChange??0)!==0?Math.abs(e.rankChange??0):''}</Text>
+                <Text style={{color:(e.rankChange??0)>0?'#22C55E':(e.rankChange??0)<0?'#EF4444':C.text3,fontWeight:'800',fontSize:12}}>{(e.rankChange??0)>0?'▲':(e.rankChange??0)<0?'▼':'–'}{(e.rankChange??0)!==0?Math.abs(e.rankChange??0):''}</Text>
               </View>
             ))}
           </ScrollView>
@@ -1039,10 +1141,10 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
 
       {/* Start Day */}
       <Modal visible={showStart} transparent animationType="slide" onRequestClose={()=>setShowStart(false)}>
-        <View style={ss.overlay}><View style={[ss.modal,{maxHeight:'93%'}]}>
-          <Text style={ss.modalTitle}>Start Day Session</Text>
+        <View style={ss.overlay}><View style={[ss.modal,{maxHeight:'93%',backgroundColor:C.modal}]}>
+          <Text style={[ss.modalTitle,{color:C.text}]}>Start Day Session</Text>
           <ScrollView showsVerticalScrollIndicator={false}>
-            <Text style={ss.lbl}>FORMAT</Text>
+            <Text style={[ss.lbl,{color:C.text3}]}>FORMAT</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:10}}>
               <View style={{flexDirection:'row',gap:8}}>
                 {[
@@ -1051,8 +1153,8 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
                   ['TEAM_2V2','🏓 2v2 Doubles'],
                   ['CUSTOM_TEAMS','🎨 Custom Teams'],
                 ].map(([v,l])=>(
-                  <TouchableOpacity key={v} style={[ss.fmtBtn,fmt===v&&ss.fmtBtnOn]} onPress={()=>setFmt(v)}>
-                    <Text style={{color:fmt===v?'#007AFF':'#64748B',fontWeight:'700',fontSize:12}}>{l}</Text>
+                  <TouchableOpacity key={v} style={[ss.fmtBtn,{backgroundColor:C.fmtBtn,borderColor:C.fmtBtnBorder},fmt===v&&ss.fmtBtnOn]} onPress={()=>setFmt(v)}>
+                    <Text style={{color:fmt===v?'#007AFF':C.text2,fontWeight:'700',fontSize:12}}>{l}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -1060,25 +1162,25 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
             {fmt==='TEAM_2V2'&&(
               <View style={{backgroundColor:'#EFF6FF',borderRadius:10,padding:12,marginBottom:10}}>
                 <Text style={{color:'#1D4ED8',fontWeight:'700',fontSize:13}}>🏓 2v2 Doubles Mode</Text>
-                <Text style={{color:'#3B82F6',fontSize:12,marginTop:4}}>Players are balanced into pairs (best+weakest, 2nd+3rd, etc.) so every pair is equally matched. All 4 players play together on one table per match.</Text>
+                <Text style={{color:'#3B82F6',fontSize:12,marginTop:4}}>Players are balanced into pairs. Needs exactly 4, 8, 12... players.</Text>
               </View>
             )}
             {fmt!=='FREE_FOR_ALL'&&fmt!=='TEAM_2V2'&&<>
-              <Text style={ss.lbl}>TEAMS</Text>
+              <Text style={[ss.lbl,{color:C.text3}]}>TEAMS</Text>
               <View style={{flexDirection:'row',gap:8,marginBottom:10}}>
                 {['2','3','4'].map(n=>(
-                  <TouchableOpacity key={n} style={[ss.fmtBtn,{flex:1},nTeams===n&&ss.fmtBtnOn]} onPress={()=>setNTeams(n)}><Text style={{color:nTeams===n?'#007AFF':'#64748B',fontWeight:'700',textAlign:'center'}}>{n} Teams</Text></TouchableOpacity>
+                  <TouchableOpacity key={n} style={[ss.fmtBtn,{flex:1,backgroundColor:C.fmtBtn,borderColor:C.fmtBtnBorder},nTeams===n&&ss.fmtBtnOn]} onPress={()=>setNTeams(n)}><Text style={{color:nTeams===n?'#007AFF':C.text2,fontWeight:'700',textAlign:'center'}}>{n} Teams</Text></TouchableOpacity>
                 ))}
               </View>
-              <Text style={ss.lbl}>FORMAT SIZE</Text>
+              <Text style={[ss.lbl,{color:C.text3}]}>FORMAT SIZE</Text>
               <View style={{flexDirection:'row',gap:8,marginBottom:10}}>
                 {[['1','1v1'],['2','2v2']].map(([n,l])=>(
-                  <TouchableOpacity key={n} style={[ss.fmtBtn,{flex:1},perTeam===n&&ss.fmtBtnOn]} onPress={()=>setPerTeam(n)}><Text style={{color:perTeam===n?'#007AFF':'#64748B',fontWeight:'700',textAlign:'center',fontSize:12}}>{l}</Text></TouchableOpacity>
+                  <TouchableOpacity key={n} style={[ss.fmtBtn,{flex:1,backgroundColor:C.fmtBtn,borderColor:C.fmtBtnBorder},perTeam===n&&ss.fmtBtnOn]} onPress={()=>setPerTeam(n)}><Text style={{color:perTeam===n?'#007AFF':C.text2,fontWeight:'700',textAlign:'center',fontSize:12}}>{l}</Text></TouchableOpacity>
                 ))}
               </View>
             </>}
             <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-              <Text style={ss.lbl}>PLAYERS ({present.length})</Text>
+              <Text style={[ss.lbl,{color:C.text3}]}>PLAYERS ({present.length})</Text>
               <View style={{flexDirection:'row',gap:12}}>
                 <TouchableOpacity onPress={()=>setPresent(members.map(m=>m.id))}><Text style={{color:'#007AFF',fontSize:12,fontWeight:'700'}}>All</Text></TouchableOpacity>
                 <TouchableOpacity onPress={()=>setPresent([])}><Text style={{color:'#EF4444',fontSize:12,fontWeight:'700'}}>None</Text></TouchableOpacity>
@@ -1100,7 +1202,7 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
             </View>}
           </ScrollView>
           <View style={{flexDirection:'row',gap:8,marginTop:14}}>
-            <TouchableOpacity style={[ss.btn,ss.btnGray,{flex:1}]} onPress={()=>setShowStart(false)}><Text style={{color:'#64748B',fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
+            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={()=>setShowStart(false)}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
             <TouchableOpacity style={[ss.btn,ss.btnGreen,{flex:1}]} onPress={startDay}><Text style={ss.btnTxt}>▶ Start</Text></TouchableOpacity>
           </View>
         </View></View>
@@ -1108,72 +1210,72 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
 
       {/* Add Player Mid-Day */}
       <Modal visible={showAddPlayer} transparent animationType="slide" onRequestClose={()=>setShowAddPlayer(false)}>
-        <View style={ss.overlay}><View style={ss.modal}>
-          <Text style={ss.modalTitle}>+ Add Player Mid-Day</Text>
-          <Text style={ss.modalSub}>New matches will be scheduled with this player</Text>
+        <View style={ss.overlay}><View style={[ss.modal,{backgroundColor:C.modal}]}>
+          <Text style={[ss.modalTitle,{color:C.text}]}>+ Add Player Mid-Day</Text>
+          <Text style={[ss.modalSub,{color:C.text3}]}>New matches will be scheduled with this player</Text>
           <ScrollView style={{maxHeight:300}}>
-            {absentMembers.length===0&&<Text style={{color:'#94A3B8',textAlign:'center',padding:20}}>All members are already present</Text>}
+            {absentMembers.length===0&&<Text style={{color:C.text3,textAlign:'center',padding:20}}>All members are already present</Text>}
             {absentMembers.map(m=>(
-              <TouchableOpacity key={m.id} style={{flexDirection:'row',alignItems:'center',gap:10,paddingVertical:10,borderBottomWidth:1,borderBottomColor:'#F8FAFC',backgroundColor:addPlayerId===m.id?'#EFF6FF':'transparent',borderRadius:8,paddingHorizontal:6}} onPress={()=>setAddPlayerId(m.id)}>
+              <TouchableOpacity key={m.id} style={{flexDirection:'row',alignItems:'center',gap:10,paddingVertical:10,borderBottomWidth:1,borderBottomColor:C.cardBorder,backgroundColor:addPlayerId===m.id?'#EFF6FF':'transparent',borderRadius:8,paddingHorizontal:6}} onPress={()=>setAddPlayerId(m.id)}>
                 <Text style={{fontSize:18}}>{addPlayerId===m.id?'🔵':'⚪'}</Text>
-                <Text style={{flex:1,color:'#1E293B',fontWeight:'600'}}>{m.displayName}</Text>
+                <Text style={{flex:1,color:C.text,fontWeight:'600'}}>{m.displayName}</Text>
                 <ProfBadge p={m.proficiency}/>
               </TouchableOpacity>
             ))}
           </ScrollView>
           <View style={{flexDirection:'row',gap:8,marginTop:14}}>
-            <TouchableOpacity style={[ss.btn,ss.btnGray,{flex:1}]} onPress={()=>{setShowAddPlayer(false);setAddPlayerId(null);}}><Text style={{color:'#64748B',fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
-            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:addPlayerId?'#7C3AED':'#CBD5E1'}]} onPress={doAddPlayerMidDay} disabled={!addPlayerId}><Text style={ss.btnTxt}>Add Player</Text></TouchableOpacity>
+            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={()=>{setShowAddPlayer(false);setAddPlayerId(null);}}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
+            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:addPlayerId?'#7C3AED':C.bg3}]} onPress={doAddPlayerMidDay} disabled={!addPlayerId}><Text style={ss.btnTxt}>Add Player</Text></TouchableOpacity>
           </View>
         </View></View>
       </Modal>
 
       {/* Remove Player Mid-Day */}
       <Modal visible={showRemovePlayer} transparent animationType="slide" onRequestClose={()=>setShowRemovePlayer(false)}>
-        <View style={ss.overlay}><View style={ss.modal}>
-          <Text style={ss.modalTitle}>− Remove Player Mid-Day</Text>
-          <Text style={ss.modalSub}>Remaining matches will be rescheduled without this player</Text>
+        <View style={ss.overlay}><View style={[ss.modal,{backgroundColor:C.modal}]}>
+          <Text style={[ss.modalTitle,{color:C.text}]}>− Remove Player Mid-Day</Text>
+          <Text style={[ss.modalSub,{color:C.text3}]}>Remaining matches will be rescheduled without this player</Text>
           <ScrollView style={{maxHeight:300}}>
             {presentMembers.map(m=>(
-              <TouchableOpacity key={m.id} style={{flexDirection:'row',alignItems:'center',gap:10,paddingVertical:10,borderBottomWidth:1,borderBottomColor:'#F8FAFC',backgroundColor:removePlayerId===m.id?'#FEF2F2':'transparent',borderRadius:8,paddingHorizontal:6}} onPress={()=>setRemovePlayerId(m.id)}>
+              <TouchableOpacity key={m.id} style={{flexDirection:'row',alignItems:'center',gap:10,paddingVertical:10,borderBottomWidth:1,borderBottomColor:C.cardBorder,backgroundColor:removePlayerId===m.id?'#FEF2F2':'transparent',borderRadius:8,paddingHorizontal:6}} onPress={()=>setRemovePlayerId(m.id)}>
                 <Text style={{fontSize:18}}>{removePlayerId===m.id?'🔴':'⚪'}</Text>
-                <Text style={{flex:1,color:'#1E293B',fontWeight:'600'}}>{m.displayName}</Text>
+                <Text style={{flex:1,color:C.text,fontWeight:'600'}}>{m.displayName}</Text>
                 <ProfBadge p={m.proficiency}/>
               </TouchableOpacity>
             ))}
           </ScrollView>
           <View style={{flexDirection:'row',gap:8,marginTop:14}}>
-            <TouchableOpacity style={[ss.btn,ss.btnGray,{flex:1}]} onPress={()=>{setShowRemovePlayer(false);setRemovePlayerId(null);}}><Text style={{color:'#64748B',fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
-            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:removePlayerId?'#EF4444':'#CBD5E1'}]} onPress={doRemovePlayerMidDay} disabled={!removePlayerId}><Text style={ss.btnTxt}>Remove Player</Text></TouchableOpacity>
+            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={()=>{setShowRemovePlayer(false);setRemovePlayerId(null);}}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
+            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:removePlayerId?'#EF4444':C.bg3}]} onPress={doRemovePlayerMidDay} disabled={!removePlayerId}><Text style={ss.btnTxt}>Remove Player</Text></TouchableOpacity>
           </View>
         </View></View>
       </Modal>
 
       {/* Submit Score */}
       <Modal visible={!!showResult} transparent animationType="slide" onRequestClose={()=>setShowResult(null)}>
-        <View style={ss.overlay}><View style={ss.modal}>
-          <Text style={ss.modalTitle}>Submit Score</Text>
+        <View style={ss.overlay}><View style={[ss.modal,{backgroundColor:C.modal}]}>
+          <Text style={[ss.modalTitle,{color:C.text}]}>Submit Score</Text>
           {(()=>{
             const is2v2 = showResult?.team1Members && showResult.team1Members.length > 1;
             const side1 = is2v2 ? showResult!.team1Members!.join(' & ') : (showResult?.member1Name??'');
             const side2 = is2v2 ? showResult!.team2Members!.join(' & ') : (showResult?.member2Name??'');
             return <>
-              <Text style={ss.modalSub}>Match #{showResult?.matchNumber}{is2v2?' · 2v2 Doubles':''}</Text>
+              <Text style={[ss.modalSub,{color:C.text3}]}>Match #{showResult?.matchNumber}{is2v2?' · 2v2 Doubles':''}</Text>
               <View style={{flexDirection:'row',alignItems:'flex-start',gap:14,marginVertical:14}}>
                 <View style={{flex:1,alignItems:'center'}}>
-                  <Text style={[ss.lbl,{textAlign:'center',fontSize:11}]} numberOfLines={2}>{side1}</Text>
-                  <TextInput style={[ss.inp,{fontSize:40,fontWeight:'900',textAlign:'center',paddingVertical:14,width:'100%'}]} value={s1} onChangeText={setS1} keyboardType="number-pad" placeholder="0" placeholderTextColor="#ddd"/>
+                  <Text style={[ss.lbl,{textAlign:'center',fontSize:11,color:C.text3}]} numberOfLines={2}>{side1}</Text>
+                  <TextInput style={[ss.inp,{fontSize:40,fontWeight:'900',textAlign:'center',paddingVertical:14,width:'100%',backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} value={s1} onChangeText={setS1} keyboardType="number-pad" placeholder="0" placeholderTextColor={C.text3}/>
                 </View>
-                <Text style={{fontSize:28,color:'#94A3B8',marginTop:40}}>–</Text>
+                <Text style={{fontSize:28,color:C.text3,marginTop:40}}>–</Text>
                 <View style={{flex:1,alignItems:'center'}}>
-                  <Text style={[ss.lbl,{textAlign:'center',fontSize:11}]} numberOfLines={2}>{side2}</Text>
-                  <TextInput style={[ss.inp,{fontSize:40,fontWeight:'900',textAlign:'center',paddingVertical:14,width:'100%'}]} value={s2} onChangeText={setS2} keyboardType="number-pad" placeholder="0" placeholderTextColor="#ddd"/>
+                  <Text style={[ss.lbl,{textAlign:'center',fontSize:11,color:C.text3}]} numberOfLines={2}>{side2}</Text>
+                  <TextInput style={[ss.inp,{fontSize:40,fontWeight:'900',textAlign:'center',paddingVertical:14,width:'100%',backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} value={s2} onChangeText={setS2} keyboardType="number-pad" placeholder="0" placeholderTextColor={C.text3}/>
                 </View>
               </View>
             </>;
           })()}
           <View style={{flexDirection:'row',gap:8}}>
-            <TouchableOpacity style={[ss.btn,ss.btnGray,{flex:1}]} onPress={()=>setShowResult(null)}><Text style={{color:'#64748B',fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
+            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={()=>setShowResult(null)}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
             <TouchableOpacity style={[ss.btn,ss.btnGreen,{flex:1}]} onPress={submitResult}><Text style={ss.btnTxt}>Submit ✓</Text></TouchableOpacity>
           </View>
         </View></View>
@@ -1181,14 +1283,14 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
 
       {/* Add Guest */}
       <Modal visible={showGuest} transparent animationType="slide" onRequestClose={()=>setShowGuest(false)}>
-        <View style={ss.overlay}><View style={ss.modal}>
-          <Text style={ss.modalTitle}>Add Guest Player</Text>
-          <Text style={ss.lbl}>NAME</Text>
-          <TextInput style={ss.inp} placeholder="Guest name" placeholderTextColor="#aaa" value={guestName} onChangeText={setGuestName}/>
-          <Text style={ss.lbl}>SKILL LEVEL</Text>
+        <View style={ss.overlay}><View style={[ss.modal,{backgroundColor:C.modal}]}>
+          <Text style={[ss.modalTitle,{color:C.text}]}>Add Guest Player</Text>
+          <Text style={[ss.lbl,{color:C.text3}]}>NAME</Text>
+          <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="Guest name" placeholderTextColor={C.text3} value={guestName} onChangeText={setGuestName}/>
+          <Text style={[ss.lbl,{color:C.text3}]}>SKILL LEVEL</Text>
           <ProfPicker value={guestProf} onChange={setGuestProf}/>
           <View style={{flexDirection:'row',gap:8,marginTop:4}}>
-            <TouchableOpacity style={[ss.btn,ss.btnGray,{flex:1}]} onPress={()=>{setShowGuest(false);setGuestName('');}}><Text style={{color:'#64748B',fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
+            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={()=>{setShowGuest(false);setGuestName('');}}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
             <TouchableOpacity style={[ss.btn,ss.btnAmber,{flex:1}]} onPress={addGuest}><Text style={ss.btnTxt}>Add Guest</Text></TouchableOpacity>
           </View>
         </View></View>
@@ -1196,37 +1298,37 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
 
       {/* Admins */}
       <Modal visible={showAdmins} transparent animationType="slide" onRequestClose={()=>setShowAdmins(false)}>
-        <View style={ss.overlay}><View style={ss.modal}>
-          <Text style={ss.modalTitle}>Manage Admins</Text>
+        <View style={ss.overlay}><View style={[ss.modal,{backgroundColor:C.modal}]}>
+          <Text style={[ss.modalTitle,{color:C.text}]}>Manage Admins</Text>
           <ScrollView style={{maxHeight:320}}>
             {members.filter(m=>!m.isGuest&&m.playerId).map(m=>{
               const isAdm=(detail?.admins??[]).some(a=>a.playerId===m.playerId);
-              return(<View key={m.id} style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',paddingVertical:12,borderBottomWidth:1,borderBottomColor:'#F1F5F9'}}>
-                <Text style={{color:'#1E293B',fontWeight:'600'}}>{m.displayName}</Text>
-                <TouchableOpacity style={{paddingHorizontal:12,paddingVertical:5,borderRadius:8,borderWidth:1,borderColor:isAdm?'#22C55E':'#E2E8F0',backgroundColor:isAdm?'#DCFCE7':'#fff'}} onPress={()=>!isAdm&&m.playerId&&makeAdmin(m.playerId)}>
-                  <Text style={{color:isAdm?'#16A34A':'#94A3B8',fontWeight:'600',fontSize:12}}>{isAdm?'Admin ✓':'Make Admin'}</Text>
+              return(<View key={m.id} style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',paddingVertical:12,borderBottomWidth:1,borderBottomColor:C.cardBorder}}>
+                <Text style={{color:C.text,fontWeight:'600'}}>{m.displayName}</Text>
+                <TouchableOpacity style={{paddingHorizontal:12,paddingVertical:5,borderRadius:8,borderWidth:1,borderColor:isAdm?'#22C55E':C.inpBorder,backgroundColor:isAdm?'#DCFCE7':C.bg3}} onPress={()=>!isAdm&&m.playerId&&makeAdmin(m.playerId)}>
+                  <Text style={{color:isAdm?'#16A34A':C.text3,fontWeight:'600',fontSize:12}}>{isAdm?'Admin ✓':'Make Admin'}</Text>
                 </TouchableOpacity>
               </View>);
             })}
           </ScrollView>
-          <TouchableOpacity style={[ss.btn,ss.btnGray,{marginTop:14}]} onPress={()=>setShowAdmins(false)}><Text style={{color:'#64748B',fontWeight:'600',fontSize:15}}>Done</Text></TouchableOpacity>
+          <TouchableOpacity style={[ss.btn,{backgroundColor:C.btnGray,marginTop:14}]} onPress={()=>setShowAdmins(false)}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Done</Text></TouchableOpacity>
         </View></View>
       </Modal>
 
       {/* Rank Editor */}
       <Modal visible={showRankEditor} transparent animationType="slide" onRequestClose={()=>setShowRankEditor(false)}>
-        <View style={ss.overlay}><View style={[ss.modal,{maxHeight:'88%'}]}>
-          <Text style={ss.modalTitle}>Edit Rankings</Text>
+        <View style={ss.overlay}><View style={[ss.modal,{maxHeight:'88%',backgroundColor:C.modal}]}>
+          <Text style={[ss.modalTitle,{color:C.text}]}>Edit Rankings</Text>
           <ScrollView style={{maxHeight:360}}>
             {(detail?.rankings??[]).map(r=>(
-              <View key={r.memberId} style={{flexDirection:'row',alignItems:'center',gap:10,paddingVertical:8,borderBottomWidth:1,borderBottomColor:'#F8FAFC'}}>
-                <Text style={{flex:1,color:'#1E293B',fontWeight:'600'}}>{r.displayName}</Text>
-                <TextInput style={[ss.inp,{width:60,textAlign:'center',marginBottom:0,paddingVertical:6}]} value={rankEdits[r.memberId]??''} onChangeText={v=>setRankEdits(e=>({...e,[r.memberId]:v}))} keyboardType="number-pad" placeholder={String(r.rank)}/>
+              <View key={r.memberId} style={{flexDirection:'row',alignItems:'center',gap:10,paddingVertical:8,borderBottomWidth:1,borderBottomColor:C.cardBorder}}>
+                <Text style={{flex:1,color:C.text,fontWeight:'600'}}>{r.displayName}</Text>
+                <TextInput style={[ss.inp,{width:60,textAlign:'center',marginBottom:0,paddingVertical:6,backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} value={rankEdits[r.memberId]??''} onChangeText={v=>setRankEdits(e=>({...e,[r.memberId]:v}))} keyboardType="number-pad" placeholder={String(r.rank)} placeholderTextColor={C.text3}/>
               </View>
             ))}
           </ScrollView>
           <View style={{flexDirection:'row',gap:8,marginTop:14}}>
-            <TouchableOpacity style={[ss.btn,ss.btnGray,{flex:1}]} onPress={()=>setShowRankEditor(false)}><Text style={{color:'#64748B',fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
+            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={()=>setShowRankEditor(false)}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
             <TouchableOpacity style={[ss.btn,ss.btnBlue,{flex:1}]} onPress={saveCustomRanks}><Text style={ss.btnTxt}>Save</Text></TouchableOpacity>
           </View>
         </View></View>
@@ -1234,12 +1336,12 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
 
       {/* Skill Edit */}
       <Modal visible={!!profEditMember} transparent animationType="slide" onRequestClose={()=>setProfEditMember(null)}>
-        <View style={ss.overlay}><View style={ss.modal}>
-          <Text style={ss.modalTitle}>Update Skill Level</Text>
-          <Text style={ss.modalSub}>{profEditMember?.displayName}</Text>
+        <View style={ss.overlay}><View style={[ss.modal,{backgroundColor:C.modal}]}>
+          <Text style={[ss.modalTitle,{color:C.text}]}>Update Skill Level</Text>
+          <Text style={[ss.modalSub,{color:C.text3}]}>{profEditMember?.displayName}</Text>
           <ProfPicker value={profEditValue} onChange={setProfEditValue}/>
           <View style={{flexDirection:'row',gap:8,marginTop:8}}>
-            <TouchableOpacity style={[ss.btn,ss.btnGray,{flex:1}]} onPress={()=>setProfEditMember(null)}><Text style={{color:'#64748B',fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
+            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={()=>setProfEditMember(null)}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
             <TouchableOpacity style={[ss.btn,ss.btnAmber,{flex:1}]} onPress={saveProficiency}><Text style={ss.btnTxt}>Save</Text></TouchableOpacity>
           </View>
         </View></View>
@@ -1248,46 +1350,46 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
       {/* AI Chat */}
       <Modal visible={aiModal} transparent animationType="slide" onRequestClose={()=>setAiModal(false)}>
         <View style={ss.overlay}><View style={ss.modal}>
-          <Text style={ss.modalTitle}>🤖 AI Assistant</Text>
-          <Text style={{color:'#64748B',fontSize:12,marginBottom:10}}>Ask about team splits, coaching tips, player analysis — no paid API needed!</Text>
-          <TextInput style={[ss.inp,{height:80,textAlignVertical:'top'}]} placeholder="e.g. Who should pair for teams? Who is improving?" placeholderTextColor="#aaa" value={aiQ} onChangeText={setAiQ} multiline/>
+          <Text style={[ss.modalTitle,{color:C.text}]}>🤖 AI Assistant</Text>
+          <Text style={{color:C.text3,fontSize:12,marginBottom:10}}>Ask about team splits, coaching tips, player analysis</Text>
+          <TextInput style={[ss.inp,{height:80,textAlignVertical:'top',backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="e.g. Who should pair for teams?" placeholderTextColor={C.text3} value={aiQ} onChangeText={setAiQ} multiline/>
           <TouchableOpacity style={[ss.btn,{backgroundColor:'#7C3AED',marginBottom:8},(!aiQ.trim()||aiLoading)&&ss.btnOff]} onPress={askAI} disabled={!aiQ.trim()||aiLoading}>
             {aiLoading?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>Ask AI</Text>}
           </TouchableOpacity>
-          {!!aiA&&<View style={ss.aiBox}><Text style={ss.aiTxt}>{aiA}</Text></View>}
-          <TouchableOpacity style={[ss.btn,ss.btnGray,{marginTop:8}]} onPress={()=>setAiModal(false)}><Text style={{color:'#64748B',fontWeight:'600',fontSize:15}}>Close</Text></TouchableOpacity>
+          {!!aiA&&<View style={[ss.aiBox,{backgroundColor:C.bg3,borderColor:C.inpBorder}]}><Text style={[ss.aiTxt,{color:C.text}]}>{aiA}</Text></View>}
+          <TouchableOpacity style={[ss.btn,{backgroundColor:C.btnGray,marginTop:8}]} onPress={()=>setAiModal(false)}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Close</Text></TouchableOpacity>
         </View></View>
       </Modal>
 
       {/* H2H */}
       <Modal visible={h2hModal} transparent animationType="slide" onRequestClose={()=>setH2hModal(false)}>
-        <View style={ss.overlay}><View style={ss.modal}>
-          <Text style={ss.modalTitle}>Head to Head ⚔</Text>
+        <View style={ss.overlay}><View style={[ss.modal,{backgroundColor:C.modal}]}>
+          <Text style={[ss.modalTitle,{color:C.text}]}>Head to Head ⚔</Text>
           {!h2hData&&<ActivityIndicator color="#007AFF" style={{padding:30}}/>}
           {h2hData&&<>
             <View style={{flexDirection:'row',alignItems:'center',gap:8,marginBottom:10}}>
               <View style={{flex:1,backgroundColor:'#EFF6FF',borderRadius:10,padding:12,alignItems:'center'}}>
                 <Text style={{color:'#007AFF',fontWeight:'800',fontSize:22}}>{h2hData.member1Wins}</Text>
-                <Text style={{color:'#1E293B',fontWeight:'600',fontSize:12,textAlign:'center'}}>{h2hData.member1Name}</Text>
+                <Text style={{color:'#1D4ED8',fontWeight:'600',fontSize:12,textAlign:'center'}}>{h2hData.member1Name}</Text>
               </View>
-              <Text style={{color:'#94A3B8',fontWeight:'900'}}>VS</Text>
+              <Text style={{color:C.text3,fontWeight:'900'}}>VS</Text>
               <View style={{flex:1,backgroundColor:'#FEF2F2',borderRadius:10,padding:12,alignItems:'center'}}>
                 <Text style={{color:'#EF4444',fontWeight:'800',fontSize:22}}>{h2hData.member2Wins}</Text>
-                <Text style={{color:'#1E293B',fontWeight:'600',fontSize:12,textAlign:'center'}}>{h2hData.member2Name}</Text>
+                <Text style={{color:'#DC2626',fontWeight:'600',fontSize:12,textAlign:'center'}}>{h2hData.member2Name}</Text>
               </View>
             </View>
-            <Text style={{color:'#94A3B8',fontSize:12,textAlign:'center',marginBottom:8}}>{h2hData.totalMatches??0} matches played</Text>
+            <Text style={{color:C.text3,fontSize:12,textAlign:'center',marginBottom:8}}>{h2hData.totalMatches??0} matches played</Text>
             <ScrollView style={{maxHeight:200}}>
               {(h2hData.matches??[]).map((m:any,i:number)=>(
-                <View key={i} style={{flexDirection:'row',justifyContent:'space-between',paddingVertical:7,borderBottomWidth:1,borderBottomColor:'#F8FAFC'}}>
-                  <Text style={{color:'#94A3B8',fontSize:11}}>Day {m.dayNumber}</Text>
-                  <Text style={{color:'#1E293B',fontWeight:'700'}}>{m.member1Score} — {m.member2Score}</Text>
+                <View key={i} style={{flexDirection:'row',justifyContent:'space-between',paddingVertical:7,borderBottomWidth:1,borderBottomColor:C.cardBorder}}>
+                  <Text style={{color:C.text3,fontSize:11}}>Day {m.dayNumber}</Text>
+                  <Text style={{color:C.text,fontWeight:'700'}}>{m.member1Score} — {m.member2Score}</Text>
                   <Text style={{color:m.winnerId===h2hM1?.id?'#007AFF':'#EF4444',fontSize:11,fontWeight:'600'}}>{m.winnerId===h2hM1?.id?h2hData.member1Name:h2hData.member2Name}</Text>
                 </View>
               ))}
             </ScrollView>
           </>}
-          <TouchableOpacity style={[ss.btn,ss.btnGray,{marginTop:12}]} onPress={()=>setH2hModal(false)}><Text style={{color:'#64748B',fontWeight:'600',fontSize:15}}>Close</Text></TouchableOpacity>
+          <TouchableOpacity style={[ss.btn,{backgroundColor:C.btnGray,marginTop:12}]} onPress={()=>setH2hModal(false)}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Close</Text></TouchableOpacity>
         </View></View>
       </Modal>
 
@@ -1299,15 +1401,47 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
 
 // ── APP ROOT ──────────────────────────────────────────────────────────────────
 export default function App() {
+  const C = useTheme();
   const [user,setUser]=useState<User|null>(null);
   const [selected,setSelected]=useState<Tournament|null>(null);
   const [booting,setBooting]=useState(true);
 
   useEffect(()=>{
-    AsyncStorage.multiGet(['token','user']).then(([[,tok],[,u]])=>{
-      if(tok&&u){try{setUser(JSON.parse(u));}catch{}}
+    const boot = async () => {
+      try {
+        const [[,tok],[,u]] = await AsyncStorage.multiGet(['token','user']);
+        if (tok && u) {
+          // Verify token is still valid by calling /players/me
+          const res = await fetch(`${API_URL}/players/me`, {
+            headers: { Authorization: `Bearer ${tok}` }
+          });
+          if (res.ok) {
+            const fresh = await res.json();
+            // Always use fresh data from server — never trust stale AsyncStorage user
+            const freshUser: User = {
+              id: fresh.id,
+              username: fresh.username,
+              email: fresh.email,
+              displayName: fresh.displayName,
+              proficiency: fresh.proficiency,
+            };
+            await AsyncStorage.setItem('user', JSON.stringify(freshUser));
+            setUser(freshUser);
+          } else {
+            // Token invalid/expired — clear everything and force re-login
+            await AsyncStorage.multiRemove(['token','user']);
+          }
+        }
+      } catch {
+        // Network error on boot — still trust local storage so app works offline
+        try {
+          const [[,tok],[,u]] = await AsyncStorage.multiGet(['token','user']);
+          if (tok && u) setUser(JSON.parse(u));
+        } catch {}
+      }
       setBooting(false);
-    });
+    };
+    boot();
   },[]);
 
   // ── PUSH NOTIFICATIONS SETUP ──────────────────────────────────────────────
@@ -1368,11 +1502,20 @@ export default function App() {
     setupNotifications();
   },[]);
 
-  const login=(u:User)=>{setUser(u);AsyncStorage.setItem('user',JSON.stringify(u));};
-  const logout=()=>{setUser(null);setSelected(null);AsyncStorage.multiRemove(['token','user']);};
+  const login=(u:User)=>{
+    // Always store fresh user data on login
+    AsyncStorage.setItem('user',JSON.stringify(u));
+    setUser(u);
+  };
+  const logout=async()=>{
+    setUser(null);
+    setSelected(null);
+    // Clear ALL storage — prevents stale token/wrong user on next login
+    await AsyncStorage.clear();
+  };
 
   if(booting) return(
-    <View style={{flex:1,alignItems:'center',justifyContent:'center',backgroundColor:'#F8FAFC'}}>
+    <View style={{flex:1,alignItems:'center',justifyContent:'center',backgroundColor:C.bg}}>
       <Text style={{fontSize:64}}>🏓</Text>
       <ActivityIndicator color="#007AFF" style={{marginTop:16}}/>
     </View>
