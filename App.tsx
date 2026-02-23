@@ -684,6 +684,7 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
 
   const startDay=async()=>{
     if(present.length<2)return Alert.alert('Error','Select at least 2 players');
+    if(fmt==='TEAM_2V2'&&present.length%4!==0)return Alert.alert('Error',`2v2 Doubles needs exactly 4, 8, 12... players.\nYou selected ${present.length}. Please add or remove a player.`);
     try{await api(`/tournaments/${t.id}/days`,{method:'POST',body:JSON.stringify({presentMemberIds:present,matchFormat:fmt,numberOfTeams:parseInt(nTeams)||2,playersPerTeam:parseInt(perTeam)||2})});setShowStart(false);setPresent([]);load();}
     catch(e:any){Alert.alert('Error',e.message);}
   };
@@ -1071,7 +1072,7 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
               </View>
               <Text style={ss.lbl}>FORMAT SIZE</Text>
               <View style={{flexDirection:'row',gap:8,marginBottom:10}}>
-                {[['1','1v1'],['2','2v2'],['3','3v3'],['4','4v4']].map(([n,l])=>(
+                {[['1','1v1'],['2','2v2']].map(([n,l])=>(
                   <TouchableOpacity key={n} style={[ss.fmtBtn,{flex:1},perTeam===n&&ss.fmtBtnOn]} onPress={()=>setPerTeam(n)}><Text style={{color:perTeam===n?'#007AFF':'#64748B',fontWeight:'700',textAlign:'center',fontSize:12}}>{l}</Text></TouchableOpacity>
                 ))}
               </View>
@@ -1349,8 +1350,11 @@ export default function App() {
           }
         });
 
-        // Handle foreground notifications (show as Alert)
+        // Handle foreground notifications (show as Alert, but not for own chat)
         const unsubForeground = messaging().onMessage(async remoteMessage => {
+          const type = remoteMessage.data?.type;
+          // Don't show alert for chat messages (user just sent it themselves)
+          if (type === 'CHAT') return;
           const title = remoteMessage.notification?.title ?? 'TT Platform';
           const body = remoteMessage.notification?.body ?? '';
           Alert.alert(title, body);
