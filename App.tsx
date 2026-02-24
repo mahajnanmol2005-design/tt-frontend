@@ -2,7 +2,7 @@ import React, {useState, useEffect, useCallback, useRef} from 'react';
 import {
   SafeAreaView, ScrollView, View, Text, TextInput, TouchableOpacity,
   StyleSheet, Alert, FlatList, Modal, ActivityIndicator, RefreshControl, Platform,
-  PermissionsAndroid, useColorScheme, Keyboard,
+  PermissionsAndroid, useColorScheme, Keyboard, Animated, Linking, Share,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import messaging from '@react-native-firebase/messaging';
@@ -44,6 +44,50 @@ const api = async (path: string, options: any = {}) => {
     if (e.name === 'AbortError') throw new Error('Request timed out. Server may be waking up — try again in a moment.');
     throw e;
   }
+};
+
+// ── SMART RETRY API ───────────────────────────────────────────────────────────
+// Retries up to 3 times with exponential backoff. Falls back to cache on failure.
+const apiWithRetry = async (path: string, options: any = {}, retries = 3): Promise<any> => {
+  const cacheKey = `cache:${path}`;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const data = await api(path, options);
+      if (!options.method || options.method === 'GET') {
+        await AsyncStorage.setItem(cacheKey, JSON.stringify({data, ts: Date.now()}));
+      }
+      return data;
+    } catch (e: any) {
+      const isLast = attempt === retries;
+      const isMutation = options.method && options.method !== 'GET';
+      if (isLast || isMutation) {
+        if (!isMutation) {
+          try {
+            const cached = await AsyncStorage.getItem(cacheKey);
+            if (cached) {
+              const parsed = JSON.parse(cached);
+              parsed.data.__fromCache = true;
+              return parsed.data;
+            }
+          } catch {}
+        }
+        throw e;
+      }
+      await new Promise(res => setTimeout(res, 1000 * Math.pow(2, attempt - 1)));
+    }
+  }
+};
+
+const getLastSync = async (path: string): Promise<string|null> => {
+  try {
+    const cached = await AsyncStorage.getItem(`cache:${path}`);
+    if (!cached) return null;
+    const {ts} = JSON.parse(cached);
+    const diff = Math.round((Date.now() - ts) / 60000);
+    if (diff < 1) return 'just now';
+    if (diff < 60) return `${diff}m ago`;
+    return `${Math.round(diff/60)}h ago`;
+  } catch { return null; }
 };
 
 // ── THEME ─────────────────────────────────────────────────────────────────────
@@ -157,6 +201,139 @@ const ProfPicker = ({value,onChange}:{value:string;onChange:(v:string)=>void}) =
   </ScrollView>
 );
 
+// ── SKELETON LOADER ──────────────────────────────────────────────────────────
+const Skeleton = ({w,h,r=8,style={}}:{w:number|string;h:number;r?:number;style?:any}) => {
+  const C = useTheme();
+  const anim = useRef(new Animated.Value(0)).current;
+  useEffect(()=>{
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(anim,{toValue:1,duration:900,useNativeDriver:true}),
+        Animated.timing(anim,{toValue:0,duration:900,useNativeDriver:true}),
+      ])
+    );
+    loop.start();
+    return ()=>loop.stop();
+  },[]);
+  const opacity = anim.interpolate({inputRange:[0,1],outputRange:[0.4,0.9]});
+  return <Animated.View style={[{width:w,height:h,borderRadius:r,backgroundColor:C.bg3},style,{opacity}]}/>;
+};
+
+const TournamentSkeleton = () => {
+  const C = useTheme();
+  return(
+    <View style={{padding:16,gap:10}}>
+      {[1,2,3].map(i=>(
+        <View key={i} style={{backgroundColor:C.card,borderRadius:14,padding:14,gap:10}}>
+          <View style={{flexDirection:'row',alignItems:'center',gap:12}}>
+            <Skeleton w={44} h={44} r={22}/>
+            <View style={{flex:1,gap:6}}>
+              <Skeleton w="70%" h={14}/>
+              <Skeleton w="45%" h={11}/>
+            </View>
+            <Skeleton w={40} h={20} r={6}/>
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+};
+
+const MatchSkeleton = () => {
+  const C = useTheme();
+  return(
+    <View style={{gap:8,padding:14}}>
+      {[1,2,3,4].map(i=>(
+        <View key={i} style={{backgroundColor:C.card,borderRadius:14,padding:14,gap:8}}>
+          <View style={{flexDirection:'row',justifyContent:'space-between'}}>
+            <Skeleton w="35%" h={14}/>
+            <Skeleton w={30} h={14}/>
+            <Skeleton w="35%" h={14}/>
+          </View>
+          <View style={{flexDirection:'row',justifyContent:'center'}}><Skeleton w={80} h={22} r={10}/></View>
+        </View>
+      ))}
+    </View>
+  );
+};
+
+const RankingSkeleton = () => {
+  const C = useTheme();
+  return(
+    <View style={{padding:14,gap:8}}>
+      {[1,2,3,4,5].map(i=>(
+        <View key={i} style={{backgroundColor:C.card,borderRadius:14,padding:14,flexDirection:'row',alignItems:'center',gap:10}}>
+          <Skeleton w={32} h={32} r={16}/>
+          <View style={{flex:1,gap:6}}>
+            <Skeleton w="55%" h={14}/>
+            <Skeleton w="40%" h={11}/>
+          </View>
+          <Skeleton w={30} h={16} r={4}/>
+        </View>
+      ))}
+    </View>
+  );
+};
+
+// ── ANIMATED AUTH PROGRESS BAR ───────────────────────────────────────────────
+const AuthProgress = () => {
+  const anim = useRef(new Animated.Value(0)).current;
+  const C = useTheme();
+  useEffect(() => {
+    // Simulate progress: fast to 40%, slow crawl to 85%, then wait
+    Animated.sequence([
+      Animated.timing(anim, {toValue: 0.4, duration: 800, useNativeDriver: false}),
+      Animated.timing(anim, {toValue: 0.7, duration: 4000, useNativeDriver: false}),
+      Animated.timing(anim, {toValue: 0.85, duration: 8000, useNativeDriver: false}),
+    ]).start();
+  }, []);
+  const width = anim.interpolate({inputRange:[0,1], outputRange:['0%','100%']});
+  return (
+    <View style={{marginTop:10,gap:6}}>
+      <View style={{height:4,backgroundColor:C.bg3,borderRadius:2,overflow:'hidden'}}>
+        <Animated.View style={{height:'100%',width,backgroundColor:'#007AFF',borderRadius:2}}/>
+      </View>
+      <Text style={{color:C.text3,fontSize:11,textAlign:'center'}}>Connecting to server... (may take 20-30s on first load)</Text>
+    </View>
+  );
+};
+
+// ── CHAT SKELETON ────────────────────────────────────────────────────────────
+const ChatSkeleton = () => {
+  const C = useTheme();
+  return (
+    <View style={{flex:1,padding:12,gap:10}}>
+      {[false,true,false,false,true,true,false].map((isMe,i)=>(
+        <View key={i} style={{flexDirection:isMe?'row-reverse':'row',gap:8,alignItems:'flex-end'}}>
+          {!isMe&&<Skeleton w={26} h={26} r={13}/>}
+          <View style={{gap:4,alignItems:isMe?'flex-end':'flex-start'}}>
+            <Skeleton w={80+Math.random()*60|0} h={38} r={14}/>
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+};
+
+// ── MEMBERS SKELETON ──────────────────────────────────────────────────────────
+const MembersSkeleton = () => {
+  const C = useTheme();
+  return (
+    <View style={{padding:14,gap:8}}>
+      {[1,2,3,4,5,6].map(i=>(
+        <View key={i} style={{backgroundColor:C.card,borderRadius:14,padding:14,flexDirection:'row',alignItems:'center',gap:10}}>
+          <Skeleton w={40} h={40} r={20}/>
+          <View style={{flex:1,gap:6}}>
+            <Skeleton w="50%" h={14}/>
+            <Skeleton w="35%" h={11}/>
+          </View>
+          <Skeleton w={20} h={20} r={10}/>
+        </View>
+      ))}
+    </View>
+  );
+};
+
 // ── AUTH ──────────────────────────────────────────────────────────────────────
 const AuthScreen = ({onLogin}:{onLogin:(u:User)=>void}) => {
   const C = useTheme();
@@ -208,9 +385,9 @@ const AuthScreen = ({onLogin}:{onLogin:(u:User)=>void}) => {
           <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="Password" placeholderTextColor={C.text3} value={password} onChangeText={setPassword} secureTextEntry/>
           {!isLogin&&<><Text style={[ss.lbl,{color:C.text3}]}>SKILL LEVEL</Text><ProfPicker value={proficiency} onChange={setProficiency}/></>}
           <TouchableOpacity style={[ss.btn,ss.btnBlue,loading&&ss.btnOff]} onPress={submit} disabled={loading}>
-            {loading?<><ActivityIndicator color="#fff" style={{marginBottom:2}}/></>:<Text style={ss.btnTxt}>{isLogin?'Login':'Register'}</Text>}
+            {loading?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>{isLogin?'Login':'Register'}</Text>}
           </TouchableOpacity>
-          {loading&&<Text style={{color:C.text3,fontSize:11,textAlign:'center',marginTop:6}}>Connecting to server... (first load may take 20-30s)</Text>}
+          {loading&&<AuthProgress/>}
           <TouchableOpacity onPress={()=>{setIsLogin(!isLogin);setError('');}} style={{marginTop:14,alignItems:'center'}}>
             <Text style={{color:C.text3,fontSize:14}}>{isLogin?"No account? ":"Have account? "}<Text style={{color:'#007AFF',fontWeight:'700'}}>{isLogin?'Register':'Login'}</Text></Text>
           </TouchableOpacity>
@@ -536,15 +713,28 @@ const TournamentsScreen = ({user,onSelect,onLogout}:{user:User;onSelect:(t:Tourn
   const [renameModal,setRenameModal]=useState(false);
   const [newName,setNewName]=useState('');
 
+  const [initialLoad,setInitialLoad]=useState(true);
+  const [lastSync,setLastSync]=useState<string|null>(null);
   const load=useCallback(async()=>{
     setRefreshing(true);
     setLoadErr('');
-    try{setList(await api('/tournaments'));}
-    catch(e:any){
-      if(e.message?.includes('timed out')||e.message?.includes('Network')||e.message?.includes('waking')){
-        setLoadErr('Server is starting up...
-Pull down to refresh in a moment.');
-      }
+    try{
+      const data=await apiWithRetry('/tournaments');
+      setList(data??[]);
+      setLastSync('just now');
+      setInitialLoad(false);
+    }catch(e:any){
+      // Load from cache if available
+      try{
+        const cached=await AsyncStorage.getItem('cache:/tournaments');
+        if(cached){const p=JSON.parse(cached);setList(p.data??[]);}
+      }catch{}
+      const sync=await getLastSync('/tournaments');
+      setLastSync(sync);
+      setLoadErr(e.message?.includes('timed out')
+        ?'Server waking up... retrying automatically.'
+        :'Could not connect. Showing cached data.');
+      setInitialLoad(false);
     }
     setRefreshing(false);
   },[]);
@@ -589,18 +779,33 @@ Pull down to refresh in a moment.');
   return(
     <SafeAreaView style={[ss.screen,{backgroundColor:C.bg}]}>
       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',padding:16,paddingBottom:8}}>
-        <View><Text style={{fontSize:22,fontWeight:'900',color:C.text}}>🏓 TT Platform</Text>
-        <Text style={{color:C.text3,fontSize:12}}>Hi, {user.displayName}</Text></View>
+        <View>
+          <Text style={{fontSize:22,fontWeight:'900',color:C.text}}>🏓 TT Platform</Text>
+          <Text style={{color:C.text3,fontSize:12}}>Hi, {user.displayName}{lastSync?` · synced ${lastSync}`:''}</Text>
+        </View>
         <TouchableOpacity onPress={onLogout}><Text style={{color:'#EF4444',fontWeight:'700',fontSize:13}}>Logout</Text></TouchableOpacity>
       </View>
       <View style={{flexDirection:'row',gap:10,paddingHorizontal:16,paddingBottom:8}}>
         <TouchableOpacity style={[ss.btn,ss.btnGreen,{flex:1,paddingVertical:10}]} onPress={()=>{setName('');setPwd('');setModal('create');}}><Text style={ss.btnTxt}>+ Create</Text></TouchableOpacity>
         <TouchableOpacity style={[ss.btn,ss.btnBlue,{flex:1,paddingVertical:10}]} onPress={()=>{setName('');setPwd('');setModal('join');}}><Text style={ss.btnTxt}>Join</Text></TouchableOpacity>
       </View>
+      {initialLoad&&!loadErr?<TournamentSkeleton/>:null}
+      {!!loadErr&&list.length===0&&<View style={{padding:24,alignItems:'center',gap:8}}>
+        <Text style={{fontSize:32}}>⏳</Text>
+        <Text style={{color:'#F59E0B',textAlign:'center',fontSize:13,lineHeight:20}}>{loadErr}</Text>
+        <TouchableOpacity style={[ss.btn,ss.btnBlue,{paddingHorizontal:28,paddingVertical:10,marginTop:4}]} onPress={load}>
+          <Text style={ss.btnTxt}>Tap to Retry</Text>
+        </TouchableOpacity>
+      </View>}
+      {!!loadErr&&list.length>0&&<View style={{marginHorizontal:16,padding:10,backgroundColor:'#FEF9C3',borderRadius:10,marginBottom:4,flexDirection:'row',alignItems:'center',gap:8}}>
+        <Text style={{fontSize:14}}>📡</Text>
+        <Text style={{color:'#92400E',fontSize:12,flex:1}}>{loadErr}</Text>
+        <TouchableOpacity onPress={load}><Text style={{color:'#007AFF',fontWeight:'700',fontSize:12}}>Retry</Text></TouchableOpacity>
+      </View>}
       <FlatList data={list??[]} keyExtractor={t=>String(t.id)}
         contentContainerStyle={{padding:16,gap:10}}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={load}/>}
-        ListEmptyComponent={<View style={{padding:40,alignItems:'center'}}>{!!loadErr?<><Text style={{fontSize:28,marginBottom:8}}>⏳</Text><Text style={{color:'#F59E0B',textAlign:'center',fontSize:13,lineHeight:20}}>{loadErr}</Text></>:<Text style={{color:C.text3,textAlign:'center'}}>No tournaments yet.{'\n'}Create or join one!</Text>}</View>}
+        ListEmptyComponent={!initialLoad&&!loadErr?<View style={{padding:40,alignItems:'center',gap:6}}><Text style={{fontSize:36,textAlign:'center'}}>🏓</Text><Text style={{color:C.text3,textAlign:'center',fontSize:15}}>No tournaments yet.</Text><Text style={{color:C.text3,textAlign:'center',fontSize:13}}>Create or join one to get started!</Text></View>:null}
         renderItem={({item:t})=>(
           <TouchableOpacity style={[ss.card,{backgroundColor:C.card,borderColor:C.cardBorder,borderWidth:1}]} onPress={()=>onSelect(t)}
             onLongPress={()=>{ if(t.isAdmin){ setMenuT(t); } }}
@@ -714,14 +919,21 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
   const loadingRef=useRef(false);
   const hasLoadedRef=useRef(false); // tracks if first load completed
 
+  const [loadError,setLoadError]=useState('');
+  const [detailSync,setDetailSync]=useState<string|null>(null);
+  const [isOffline,setIsOffline]=useState(false);
+  const [mutating,setMutating]=useState(false); // true during score submit / admin actions
+
   // Full load — fetches all data (members, rankings, history, current day)
   // Only called on initial load, tab switches, and after mutations
   const load=useCallback(async()=>{
     if(loadingRef.current)return;
-    loadingRef.current=true;if(!hasLoadedRef.current)setLoading(true); // only show spinner on first load, not polls
+    loadingRef.current=true;
+    if(!hasLoadedRef.current)setLoading(true);
+    setLoadError('');
     try{
-      const d:TournamentDetail=await api(`/tournaments/${t.id}`);
-      setDetail(d);
+      const d:TournamentDetail=await apiWithRetry(`/tournaments/${t.id}`);
+      setDetail(d);setIsOffline(false);setDetailSync('just now');
       if(d.currentDay?.status==='IN_PROGRESS'){
         setTimer(d.currentDay.elapsedSeconds??0);
         clearInterval(timerRef.current);
@@ -730,18 +942,32 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
         clearInterval(timerRef.current);
         if(d.currentDay?.timerSeconds) setTimer(d.currentDay.timerSeconds);
       }
-    }catch{}
+    }catch(e:any){
+      // Try loading from cache on failure
+      if(!detail){
+        try{
+          const cached=await AsyncStorage.getItem(`cache:/tournaments/${t.id}`);
+          if(cached){
+            const p=JSON.parse(cached);
+            setDetail(p.data);
+            const diff=Math.round((Date.now()-p.ts)/60000);
+            setDetailSync(diff<1?'just now':diff<60?diff+'m ago':Math.round(diff/60)+'h ago');
+          }
+        }catch{}
+      }
+      setIsOffline(true);
+      setLoadError(e.message?.includes('timed out')?'Server waking up...':'Offline — showing cached data');
+    }
     setLoading(false);loadingRef.current=false;hasLoadedRef.current=true;
   },[t.id]);
 
   // Lightweight poll — only fetches current day matches (fast, small response)
-  // Used for auto-refresh on Today tab. Does NOT trigger loading spinner.
   const loadToday=useCallback(async()=>{
     try{
-      const r=await api(`/tournaments/${t.id}/today`);
+      const r=await apiWithRetry(`/tournaments/${t.id}/today`);
       setDetail(prev=>prev?{...prev, currentDay:r.currentDay??undefined}:prev);
+      setIsOffline(false);
       if(r.currentDay?.status==='IN_PROGRESS'){
-        // Only reset timer if significantly off (>3s drift)
         setTimer(prev=>Math.abs(prev-(r.currentDay.elapsedSeconds??0))>3?(r.currentDay.elapsedSeconds??0):prev);
       }
     }catch{}
@@ -786,8 +1012,10 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
   const startDay=async()=>{
     if(present.length<2)return Alert.alert('Error','Select at least 2 players');
     if(fmt==='TEAM_2V2'&&present.length%4!==0)return Alert.alert('Error',`2v2 Doubles needs exactly 4, 8, 12... players.\nYou selected ${present.length}. Please add or remove a player.`);
+    setMutating(true);
     try{await api(`/tournaments/${t.id}/days`,{method:'POST',body:JSON.stringify({presentMemberIds:present,matchFormat:fmt,numberOfTeams:parseInt(nTeams)||2,playersPerTeam:parseInt(perTeam)||2})});setShowStart(false);setPresent([]);load();}
     catch(e:any){Alert.alert('Error',e.message);}
+    finally{setMutating(false);}
   };
   const doAddPlayerMidDay=async()=>{
     if(!addPlayerId)return;
@@ -805,23 +1033,27 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
     catch(e:any){Alert.alert('Error',e.message);}
   };
   const endDay=()=>Alert.alert('End Day?','This will finalize rankings and compute MVP.',[{text:'Cancel',style:'cancel'},{text:'End Day',style:'destructive',onPress:async()=>{
+    setMutating(true);
     try{
       const res:EndDayEntry[]=await api(`/tournaments/${t.id}/days/end`,{method:'POST'});
       setEndResult(res??[]);
       load(); // refresh first so data is ready
       setShowEndModal(true); // then show summary modal — this IS the feedback, no extra Alert
     }catch(e:any){Alert.alert('Error',e.message);}
+    finally{setMutating(false);}
   }}]);
   const submitResult=async()=>{
     if(!showResult)return;
     const v1=parseInt(s1),v2=parseInt(s2);
     if(isNaN(v1)||isNaN(v2)||v1<0||v2<0)return Alert.alert('Error','Enter valid scores (0 or higher)');
     if(v1===v2)return Alert.alert('Tie Not Allowed','Table tennis matches must have a winner. Scores cannot be equal.');
+    setMutating(true);
     try{
       await api(`/matches/${showResult.id}/result`,{method:'POST',body:JSON.stringify({member1Score:v1,member2Score:v2})});
       setShowResult(null);setS1('');setS2('');
       loadToday(); // fast refresh — updates match statuses immediately
     }catch(e:any){Alert.alert('Error',e.message);}
+    finally{setMutating(false);}
   };
   const addGuest=async()=>{
     if(!guestName.trim())return Alert.alert('Error','Enter name');
@@ -921,6 +1153,48 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
     ? members.filter(m=>m.displayName.toLowerCase().startsWith(mentionQuery!) && m.displayName.toLowerCase()!==(mentionQuery!).toLowerCase())
     : [];
 
+  // ── SHARE / CHALLENGE ──────────────────────────────────────────────────────
+  const shareTeam=async()=>{
+    const memberList=(detail?.members??[]).slice(0,5).map(m=>m.displayName).join(', ')+(members.length>5?` +${members.length-5} more`:'');
+    const topPlayer=(detail?.rankings??[])[0]?.displayName||'';
+    const dayInfo=day?.status==='IN_PROGRESS'?`🟢 Day ${day.dayNumber} LIVE right now!`:`📅 ${detail?.days?.filter(d=>d.status==='ENDED').length??0} sessions played`;
+    const winStats=topPlayer?`🥇 Leading: ${topPlayer}`:'';
+    try{
+      await Share.share({
+        title:`Join ${t.name} on TT Platform`,
+        message:[
+          `🏓 Join our table tennis group on TT Platform!`,
+          ``,
+          `📋 Tournament: ${t.name}`,
+          `👥 Members (${members.length}): ${memberList}`,
+          dayInfo,
+          winStats,
+          ``,
+          `To join: Download TT Platform → Tap "Join" → Enter: "${t.name}"`,
+        ].filter(Boolean).join('\n'),
+      });
+    }catch{}
+  };
+
+  const challengeMember=async(member:Member)=>{
+    if(!member.playerId){Alert.alert('Cannot Challenge','Guest players cannot receive push notifications.');return;}
+    Alert.alert(
+      `⚔️ Challenge ${member.displayName}`,
+      `Send a match challenge notification to ${member.displayName}?`,
+      [{text:'Cancel',style:'cancel'},{text:'Send Challenge 🏓',onPress:async()=>{
+        setMutating(true);
+        try{
+          // Post as @mention chat — backend sends push notification to mentioned user
+          const msg=`@${member.displayName} ⚔️ ${user.displayName} challenges you to a match! Accept? 🏓`;
+          await api(`/tournaments/${t.id}/chat`,{method:'POST',body:JSON.stringify({content:msg})});
+          await loadChat(true);
+          Alert.alert('Challenge Sent! ⚔️',`${member.displayName} has been notified and will see your challenge in chat.`);
+        }catch(e:any){Alert.alert('Error',e.message);}
+        finally{setMutating(false);}
+      }}]
+    );
+  };
+
   const renderMsgText=(content:string,isMe:boolean)=>{
     const parts=content.split(/(@\w[\w\s]*)/g);
     return(
@@ -937,6 +1211,18 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
   // Derived values needed in JSX — defined here to avoid "not defined" crashes
   const mvpEntry = (endResult??[]).find(e=>e.isMvp);
 
+  // ── BROADCAST NOTIFICATION ─────────────────────────────────────────────────
+  const notifyAllMembers=async(title:string,body:string)=>{
+    setMutating(true);
+    try{
+      // Post as chat message — backend push notifies all tournament members
+      await api(`/tournaments/${t.id}/chat`,{method:'POST',body:JSON.stringify({content:`📢 ${title}: ${body}`})});
+      await loadChat(true);
+      Alert.alert('📢 Notified!',`All ${members.length} members have been notified.`);
+    }catch(e:any){Alert.alert('Error',e.message);}
+    finally{setMutating(false);}
+  };
+
   return(
     <SafeAreaView style={[ss.screen,{backgroundColor:C.bg}]}>
       {/* Header */}
@@ -944,12 +1230,24 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
         <TouchableOpacity onPress={onBack} style={{padding:4}}><Text style={{color:'#007AFF',fontSize:16,fontWeight:'700'}}>‹</Text></TouchableOpacity>
         <View style={{flex:1}}>
           <Text style={{color:C.text,fontWeight:'800',fontSize:15}} numberOfLines={1}>{t.name}</Text>
-          {day?.status==='IN_PROGRESS'&&<Text style={{color:'#22C55E',fontSize:11,fontWeight:'600'}}>⏱ {fmtTimer(timer)} · Day {day.dayNumber}</Text>}
+          {day?.status==='IN_PROGRESS'
+            ?<Text style={{color:'#22C55E',fontSize:11,fontWeight:'600'}}>⏱ {fmtTimer(timer)} · Day {day.dayNumber}</Text>
+            :detailSync?<Text style={{color:C.text3,fontSize:10}}>Synced {detailSync}</Text>:null}
         </View>
         {isAdmin&&<View style={ss.admBadge}><Text style={ss.admBadgeTxt}>ADMIN</Text></View>}
+        <TouchableOpacity style={{padding:6}} onPress={shareTeam}><Text style={{fontSize:16}}>🔗</Text></TouchableOpacity>
         <TouchableOpacity style={[ss.aiBtn,{backgroundColor:C.bg3,borderColor:C.inpBorder}]} onPress={()=>{setAiA('');setAiQ('');setAiModal(true);}}><Text style={{fontSize:14}}>🤖</Text></TouchableOpacity>
         <TouchableOpacity onPress={onLogout}><Text style={{color:'#EF4444',fontWeight:'700',fontSize:12}}>Logout</Text></TouchableOpacity>
       </View>
+      {/* API progress indicator - thin bar during mutations */}
+      {mutating&&<View style={{height:3,backgroundColor:'#007AFF',opacity:0.8}}/>}
+
+      {/* Offline / error banner */}
+      {isOffline&&<View style={{backgroundColor:'#FEF9C3',paddingHorizontal:14,paddingVertical:6,flexDirection:'row',alignItems:'center',gap:8}}>
+        <Text style={{fontSize:12}}>📡</Text>
+        <Text style={{color:'#92400E',fontSize:12,flex:1}}>{loadError||'Offline — pull to refresh'}</Text>
+        <TouchableOpacity onPress={load}><Text style={{color:'#007AFF',fontWeight:'700',fontSize:12}}>Retry</Text></TouchableOpacity>
+      </View>}
 
       {/* Tabs */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{backgroundColor:C.bg2,borderBottomWidth:1,borderBottomColor:C.tabBorder,maxHeight:44}} contentContainerStyle={{paddingHorizontal:4,alignItems:'center'}}>
@@ -961,13 +1259,25 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
       </ScrollView>
 
       {/* TODAY */}
-      {tab==='Today'&&(
+      {tab==='Today'&&loading&&!detail&&<MatchSkeleton/>}
+      {tab==='Today'&&(!loading||detail)&&(
         <ScrollView contentContainerStyle={{padding:14,gap:10,paddingBottom:40}} refreshControl={<RefreshControl refreshing={loading} onRefresh={load}/>}>
           {isAdmin&&(!day||day.status==='ENDED')&&<>
             <TouchableOpacity style={[ss.btn,ss.btnGreen]} onPress={()=>{setPresent(members.map(m=>m.id));setAiTeam('');setShowStart(true);}}><Text style={ss.btnTxt}>▶ Start Day Session</Text></TouchableOpacity>
             <TouchableOpacity style={[ss.btn,{backgroundColor:'#EF4444'}]} onPress={()=>setShowLeague(true)}><Text style={ss.btnTxt}>🏆 League Mode</Text></TouchableOpacity>
           </>}
           {isAdmin&&day?.status==='IN_PROGRESS'&&<View style={{gap:8}}>
+            <TouchableOpacity
+              style={{backgroundColor:'#7C3AED22',borderRadius:10,padding:10,borderWidth:1,borderColor:'#7C3AED44',flexDirection:'row',alignItems:'center',gap:8}}
+              onPress={()=>Alert.alert('📢 Notify All Members',`Send push notification to all ${members.length} members:`,[
+                {text:'Cancel',style:'cancel'},
+                {text:'⏰ Come Play!',onPress:()=>notifyAllMembers('Day ' + day.dayNumber + ' is LIVE','Come join the session now! 🏓')},
+                {text:'🏓 Match Ready',onPress:()=>notifyAllMembers('Match Ready','Your next match is up — come to the table!')},
+                {text:'🏆 Last Matches',onPress:()=>notifyAllMembers('Final Matches','Last few matches of the day — come watch or play!')},
+              ])}>
+              <Text style={{fontSize:14}}>📢</Text>
+              <Text style={{color:'#7C3AED',fontWeight:'700',fontSize:13}}>Notify All {members.length} Members</Text>
+            </TouchableOpacity>
             <View style={{flexDirection:'row',gap:8}}>
               <TouchableOpacity style={[ss.btn,ss.btnAmber,{flex:1}]} onPress={restart}><Text style={ss.btnTxt}>↺ Restart</Text></TouchableOpacity>
               <TouchableOpacity style={[ss.btn,ss.btnRed,{flex:1}]} onPress={endDay}><Text style={ss.btnTxt}>■ End Day</Text></TouchableOpacity>
@@ -1042,12 +1352,19 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
       )}
 
       {/* RANKINGS */}
-      {tab==='Rankings'&&(
+      {tab==='Rankings'&&loading&&!detail&&<RankingSkeleton/>}
+      {tab==='Rankings'&&(!loading||detail)&&(
         <FlatList data={detail?.rankings??[]} keyExtractor={r=>String(r.memberId)}
           contentContainerStyle={{padding:14,gap:8}} onRefresh={load} refreshing={loading}
           ListHeaderComponent={<View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
             <View><Text style={[ss.secLbl,{color:C.text3}]}>RANKED BY WINS/MATCHES</Text><Text style={{color:C.text3,fontSize:10}}>More wins per match = higher rank</Text></View>
-            {isAdmin&&<TouchableOpacity style={[ss.smBtn,{borderColor:'#007AFF'}]} onPress={()=>{const e:any={};(detail?.rankings??[]).forEach(r=>e[r.memberId]=String(r.rank));setRankEdits(e);setShowRankEditor(true);}}><Text style={{color:'#007AFF',fontSize:11,fontWeight:'700'}}>✏ Edit</Text></TouchableOpacity>}
+            <View style={{flexDirection:'row',gap:6}}>
+<TouchableOpacity style={[ss.smBtn,{borderColor:'#22C55E'}]} onPress={()=>{
+  const top=(detail?.rankings??[]).slice(0,5).map((r,i)=>`${i===0?'🥇':i===1?'🥈':i===2?'🥉':'#'+r.rank} ${r.displayName} — ${r.totalMatchesWon}W/${r.totalMatchesPlayed}`).join('\n');
+  Share.share({title:`${t.name} Rankings`,message:`🏓 ${t.name} — Top Players\n\n${top}\n\nJoin on TT Platform!`}).catch(()=>{});
+}}><Text style={{color:'#22C55E',fontSize:11,fontWeight:'700'}}>📤 Share</Text></TouchableOpacity>
+              {isAdmin&&<TouchableOpacity style={[ss.smBtn,{borderColor:'#007AFF'}]} onPress={()=>{const e:any={};(detail?.rankings??[]).forEach(r=>e[r.memberId]=String(r.rank));setRankEdits(e);setShowRankEditor(true);}}><Text style={{color:'#007AFF',fontSize:11,fontWeight:'700'}}>✏ Edit</Text></TouchableOpacity>}
+            </View>
           </View>}
           renderItem={({item:r,index})=>(
             <View style={[ss.card,{backgroundColor:C.card}]}>
@@ -1079,7 +1396,8 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
       )}
 
       {/* MEMBERS */}
-      {tab==='Members'&&(
+      {tab==='Members'&&loading&&!detail&&<MembersSkeleton/>}
+      {tab==='Members'&&(!loading||detail)&&(
         <FlatList data={members} keyExtractor={m=>String(m.id)}
           contentContainerStyle={{padding:14,gap:8}} onRefresh={load} refreshing={loading}
           ListHeaderComponent={<View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
@@ -1112,7 +1430,8 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
               {memberMenuId===m.id&&<View style={{backgroundColor:C.memberMenu,borderRadius:10,marginTop:10,overflow:'hidden',borderWidth:1,borderColor:C.memberMenuBorder}}>
                 <TouchableOpacity style={{padding:12,borderBottomWidth:1,borderBottomColor:C.memberMenuBorder}} onPress={()=>{setStatsModal({id:m.id,name:m.displayName});setMemberMenuId(null);}}><Text style={{color:'#007AFF',fontWeight:'600'}}>📊 View Stats</Text></TouchableOpacity>
                 {isAdmin&&<TouchableOpacity style={{padding:12,borderBottomWidth:1,borderBottomColor:C.memberMenuBorder}} onPress={()=>{setProfEditMember(m);setProfEditValue(m.proficiency||'Intermediate');setMemberMenuId(null);}}><Text style={{color:'#7C3AED',fontWeight:'600'}}>🎯 Update Skill Level</Text></TouchableOpacity>}
-                {isAdmin&&<TouchableOpacity style={{padding:12}} onPress={()=>removeMember(m)}><Text style={{color:'#EF4444',fontWeight:'600'}}>🗑 Remove Member</Text></TouchableOpacity>}
+                <TouchableOpacity style={{padding:12,borderTopWidth:1,borderTopColor:C.memberMenuBorder}} onPress={()=>{challengeMember(m);setMemberMenuId(null);}}><Text style={{color:'#F59E0B',fontWeight:'600'}}>⚔️ Challenge to Match</Text></TouchableOpacity>
+                {isAdmin&&<TouchableOpacity style={{padding:12,borderTopWidth:1,borderTopColor:C.memberMenuBorder}} onPress={()=>removeMember(m)}><Text style={{color:'#EF4444',fontWeight:'600'}}>🗑 Remove Member</Text></TouchableOpacity>}
               </View>}
             </View>
           )}
@@ -1121,6 +1440,7 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
 
       {/* CHAT */}
       {tab==='Chat'&&<View style={{flex:1,backgroundColor:C.bg,display:'flex'}}>
+        {msgs.length===0&&loading&&<ChatSkeleton/>}
         <FlatList ref={chatRef} data={msgs??[]} keyExtractor={m=>String(m.id)} contentContainerStyle={{padding:10,gap:6,flexGrow:1,justifyContent:'flex-end'}}
           renderItem={({item:m})=>{
             const sys=m.type!=='TEXT',me=m.senderId===user.id;
@@ -1175,7 +1495,8 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
       </View>}
 
       {/* HISTORY */}
-      {tab==='History'&&<FlatList
+      {tab==='History'&&loading&&!detail&&<RankingSkeleton/>}
+      {tab==='History'&&(!loading||detail)&&<FlatList
         data={(detail?.days??[]).filter(d=>d.status==='ENDED').slice().reverse()}
         keyExtractor={d=>String(d.id)}
         contentContainerStyle={{padding:14,gap:10}}
@@ -1608,7 +1929,8 @@ export default function App() {
       <Text style={{fontSize:64}}>🏓</Text>
       <Text style={{fontSize:22,fontWeight:'900',color:C.text,marginTop:12}}>TT Platform</Text>
       <ActivityIndicator color="#007AFF" style={{marginTop:20}}/>
-      <Text style={{color:C.text3,fontSize:12,marginTop:12,textAlign:'center',paddingHorizontal:40}}>Loading...</Text>
+      <Text style={{color:C.text3,fontSize:12,marginTop:12,textAlign:'center',paddingHorizontal:40}}>Connecting to server...</Text>
+      <Text style={{color:C.text3,fontSize:10,marginTop:6,textAlign:'center',paddingHorizontal:40}}>First load may take 20-30s</Text>
     </View>
   );
   if(!user) return <AuthScreen onLogin={login}/>;
