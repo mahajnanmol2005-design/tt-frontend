@@ -12,16 +12,38 @@ import messaging from '@react-native-firebase/messaging';
 // Example: '192.168.1.45' — must be on same WiFi as your phone
 const SERVER_IP = 'tt-bakend.onrender.com';
 const API_URL = `https://${SERVER_IP}/api`;
+
+// Global logout handler — set by App root, called when 401 received
+let _onAuthFail: (() => void) | null = null;
+const setAuthFailHandler = (fn: () => void) => { _onAuthFail = fn; };
+
 const api = async (path: string, options: any = {}) => {
   const token = await AsyncStorage.getItem('token');
-  const res = await fetch(`${API_URL}${path}`, {
-    ...options,
-    headers: {'Content-Type':'application/json', Authorization:`Bearer ${token}`, ...options.headers},
-  });
-  const text = await res.text();
-  const data = text ? JSON.parse(text) : {};
-  if (!res.ok) throw new Error(data.message || 'Request failed');
-  return data;
+  // 15 second timeout — prevents hanging when Render is waking up
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch(`${API_URL}${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {'Content-Type':'application/json', Authorization:`Bearer ${token}`, ...options.headers},
+    });
+    clearTimeout(timeoutId);
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : {};
+    if (res.status === 401) {
+      // Token expired — clear storage and force re-login
+      await AsyncStorage.multiRemove(['token','user']);
+      if (_onAuthFail) _onAuthFail();
+      throw new Error('Session expired. Please log in again.');
+    }
+    if (!res.ok) throw new Error(data.message || 'Request failed');
+    return data;
+  } catch (e: any) {
+    clearTimeout(timeoutId);
+    if (e.name === 'AbortError') throw new Error('Request timed out. Server may be waking up — try again in a moment.');
+    throw e;
+  }
 };
 
 // ── THEME ─────────────────────────────────────────────────────────────────────
@@ -505,6 +527,7 @@ const TournamentsScreen = ({user,onSelect,onLogout}:{user:User;onSelect:(t:Tourn
   const C = useTheme();
   const [list,setList]=useState<Tournament[]>([]);
   const [refreshing,setRefreshing]=useState(false);
+  const [loadErr,setLoadErr]=useState('');
   const [modal,setModal]=useState<'create'|'join'|null>(null);
   const [name,setName]=useState('');
   const [pwd,setPwd]=useState('');
@@ -514,7 +537,14 @@ const TournamentsScreen = ({user,onSelect,onLogout}:{user:User;onSelect:(t:Tourn
 
   const load=useCallback(async()=>{
     setRefreshing(true);
-    try{setList(await api('/tournaments'));}catch{}
+    setLoadErr('');
+    try{setList(await api('/tournaments'));}
+    catch(e:any){
+      // Show helpful message if server is waking up
+      if(e.message?.includes('timed out')||e.message?.includes('Network')){
+        setLoadErr('Server is waking up... Pull down to refresh in a moment.');
+      }
+    }
     setRefreshing(false);
   },[]);
   useEffect(()=>{load();},[load]);
@@ -569,7 +599,7 @@ const TournamentsScreen = ({user,onSelect,onLogout}:{user:User;onSelect:(t:Tourn
       <FlatList data={list??[]} keyExtractor={t=>String(t.id)}
         contentContainerStyle={{padding:16,gap:10}}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={load}/>}
-        ListEmptyComponent={<Text style={{color:C.text3,textAlign:'center',padding:40}}>No tournaments yet.{'\n'}Create or join one!</Text>}
+        ListEmptyComponent={<View style={{padding:40,alignItems:'center'}}>{!!loadErr?<><Text style={{fontSize:28,marginBottom:8}}>⏳</Text><Text style={{color:'#F59E0B',textAlign:'center',fontSize:13,lineHeight:20}}>{loadErr}</Text></>:<Text style={{color:C.text3,textAlign:'center'}}>No tournaments yet.{'\n'}Create or join one!</Text>}</View>}
         renderItem={({item:t})=>(
           <TouchableOpacity style={[ss.card,{backgroundColor:C.card,borderColor:C.cardBorder,borderWidth:1}]} onPress={()=>onSelect(t)}
             onLongPress={()=>{ if(t.isAdmin){ setMenuT(t); } }}
@@ -701,7 +731,7 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
   },[t.id]);
 
   const loadChat=useCallback(async()=>{
-    try{const m=await api(`/tournaments/${t.id}/chat`);setMsgs(m??[]);setTimeout(()=>chatRef.current?.scrollToEnd({animated:false}),100);}catch{}
+    try{const m=await api(`/tournaments/${t.id}/chat`);setMsgs(prev=>{const newMsgs=m??[];const hasNew=newMsgs.length>prev.length;if(hasNew)setTimeout(()=>chatRef.current?.scrollToEnd({animated:true}),100);return newMsgs;});}catch{}
   },[t.id]);
 
   useEffect(()=>{load();return()=>clearInterval(timerRef.current);},[load]);
@@ -715,7 +745,6 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
   const isAdmin=detail?.isAdmin??false;
   const presentMembers=day?.presentMembers??[];
   const absentMembers=members.filter(m=>!presentMembers.some(p=>p.id===m.id));
-  // ANY member can submit scores (not just admin)
   const canScore=members.some(m=>m.playerId===user.id)||isAdmin;
 
   const togglePresent=(id:number)=>setPresent(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id]);
@@ -749,6 +778,8 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
     if(!showResult)return;
     const v1=parseInt(s1),v2=parseInt(s2);
     if(isNaN(v1)||isNaN(v2)||v1<0||v2<0)return Alert.alert('Error','Enter valid scores (0 or higher)');
+    if(v1===v2)return Alert.alert('Tie Not Allowed','Table tennis must have a winner. Scores cannot be equal.');
+    if(v1===v2)return Alert.alert('Tie Not Allowed','Table tennis matches must have a winner. Scores cannot be equal.');
     try{await api(`/matches/${showResult.id}/result`,{method:'POST',body:JSON.stringify({member1Score:v1,member2Score:v2})});setShowResult(null);setS1('');setS2('');load();}
     catch(e:any){Alert.alert('Error',e.message);}
   };
@@ -775,8 +806,18 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
     catch(e:any){Alert.alert('Error',e.message);}
   };
   const sendMsg=async()=>{
-    if(!chatTxt.trim())return;const txt=chatTxt.trim();setChatTxt('');
-    try{await api(`/tournaments/${t.id}/chat`,{method:'POST',body:JSON.stringify({content:txt})});loadChat();}catch{}
+    if(!chatTxt.trim())return;
+    const txt=chatTxt.trim();
+    setChatTxt('');
+    setMentionQuery(null);
+    try{
+      await api(`/tournaments/${t.id}/chat`,{method:'POST',body:JSON.stringify({content:txt})});
+      await loadChat();
+      setTimeout(()=>chatRef.current?.scrollToEnd({animated:true}),150);
+    }catch(e:any){
+      setChatTxt(txt); // restore message if send failed
+      Alert.alert('Error','Message not sent. Check your connection.');
+    }
   };
   const loadH2H=async(m1:Member,m2:Member)=>{
     setH2hM1(m1);setH2hData(null);setH2hModal(true);
@@ -784,16 +825,22 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
   };
   const askAI=async()=>{
     if(!aiQ.trim())return;setAiLoading(true);
-    const top=(detail?.rankings??[]).slice(0,5).map(r=>`${r.displayName}#${r.rank}(${r.totalMatchesWon}W/${r.totalMatchesPlayed})`).join(',')||'';
-    const ans=await callAI(`Tournament "${t.name}". Top: ${top}. Question: ${aiQ}. Answer in 2-3 sentences.`);
-    setAiA(ans);setAiLoading(false);
+    try{
+      const top=(detail?.rankings??[]).slice(0,5).map(r=>`${r.displayName}#${r.rank}(${r.totalMatchesWon}W/${r.totalMatchesPlayed})`).join(',')||'';
+      const ans=await callAI(`Tournament "${t.name}". Top: ${top}. Question: ${aiQ}. Answer in 2-3 sentences.`);
+      setAiA(ans);
+    }catch(e:any){setAiA('AI unavailable. Try again.');}
+    finally{setAiLoading(false);}
   };
   const loadAITeam=async()=>{
     setAiTeamLoading(true);
-    const sel=members.filter(m=>present.includes(m.id));
-    const pStr=sel.map(m=>`${m.displayName}(rank#${m.currentRank??'?'},${m.proficiency??'?'})`).join(', ');
-    const t2=await callAI(`Split these ${sel.length} players into 2 balanced table tennis teams (${perTeam}v${perTeam}): ${pStr}. Consider rank and skill. List Team A and Team B.`);
-    setAiTeam(t2);setAiTeamLoading(false);
+    try{
+      const sel=members.filter(m=>present.includes(m.id));
+      const pStr=sel.map(m=>`${m.displayName}(rank#${m.currentRank??'?'},${m.proficiency??'?'})`).join(', ');
+      const t2=await callAI(`Split these ${sel.length} players into 2 balanced table tennis teams (${perTeam}v${perTeam}): ${pStr}. Consider rank and skill. List Team A and Team B.`);
+      setAiTeam(t2);
+    }catch{setAiTeam('AI unavailable. Try again.');}
+    finally{setAiTeamLoading(false);}
   };
 
   const onChatChange=(txt:string)=>{
@@ -821,14 +868,13 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
   };
 
   const mentionSuggestions = mentionQuery!==null
-    ? members.filter(m=>m.displayName.toLowerCase().startsWith(mentionQuery) && m.displayName.toLowerCase()!==mentionQuery)
+    ? members.filter(m=>m.displayName.toLowerCase().startsWith(mentionQuery!) && m.displayName.toLowerCase()!==(mentionQuery!).toLowerCase())
     : [];
 
   const renderMsgText=(content:string,isMe:boolean)=>{
-    // Split by @mention pattern and highlight
     const parts=content.split(/(@\w[\w\s]*)/g);
     return(
-      <Text style={{color:isMe?'#fff':'#1E293B',fontSize:14}}>
+      <Text style={{color:isMe?'#fff':C.text,fontSize:14}}>
         {parts.map((part,i)=>
           part.startsWith('@')
             ?<Text key={i} style={{color:isMe?'#BFE0FF':'#007AFF',fontWeight:'700'}}>{part}</Text>
@@ -837,6 +883,9 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
       </Text>
     );
   };
+
+  // Derived values needed in JSX — defined here to avoid "not defined" crashes
+  const mvpEntry = (endResult??[]).find(e=>e.isMvp);
 
   return(
     <SafeAreaView style={[ss.screen,{backgroundColor:C.bg}]}>
@@ -971,7 +1020,7 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
               <View style={{flexDirection:'row',gap:8,marginTop:10,flexWrap:'wrap'}}>
                 <TouchableOpacity style={[ss.smBtn,{borderColor:'#007AFF'}]} onPress={()=>setStatsModal({id:r.memberId,name:r.displayName})}><Text style={{color:'#007AFF',fontSize:11,fontWeight:'600'}}>📊 Stats</Text></TouchableOpacity>
                 {members.filter(m=>m.id!==r.memberId).slice(0,1).map(opp=>(
-                  <TouchableOpacity key={opp.id} style={[ss.smBtn,{borderColor:'#7C3AED'}]} onPress={()=>loadH2H(members.find(m=>m.id===r.memberId)!,opp)}><Text style={{color:'#7C3AED',fontSize:11,fontWeight:'600'}}>⚔ H2H</Text></TouchableOpacity>
+                  <TouchableOpacity key={opp.id} style={[ss.smBtn,{borderColor:'#7C3AED'}]} onPress={()=>{const me=members.find(m=>m.id===r.memberId);if(me)loadH2H(me,opp);}}><Text style={{color:'#7C3AED',fontSize:11,fontWeight:'600'}}>⚔ H2H</Text></TouchableOpacity>
                 ))}
               </View>
             </View>
@@ -1411,34 +1460,16 @@ export default function App() {
       try {
         const [[,tok],[,u]] = await AsyncStorage.multiGet(['token','user']);
         if (tok && u) {
-          // Verify token is still valid by calling /players/me
-          const res = await fetch(`${API_URL}/players/me`, {
-            headers: { Authorization: `Bearer ${tok}` }
-          });
-          if (res.ok) {
-            const fresh = await res.json();
-            // Always use fresh data from server — never trust stale AsyncStorage user
-            const freshUser: User = {
-              id: fresh.id,
-              username: fresh.username,
-              email: fresh.email,
-              displayName: fresh.displayName,
-              proficiency: fresh.proficiency,
-            };
-            await AsyncStorage.setItem('user', JSON.stringify(freshUser));
-            setUser(freshUser);
-          } else {
-            // Token invalid/expired — clear everything and force re-login
+          try {
+            const parsed = JSON.parse(u);
+            if (parsed && parsed.id && parsed.username) {
+              setUser(parsed);
+            }
+          } catch {
             await AsyncStorage.multiRemove(['token','user']);
           }
         }
-      } catch {
-        // Network error on boot — still trust local storage so app works offline
-        try {
-          const [[,tok],[,u]] = await AsyncStorage.multiGet(['token','user']);
-          if (tok && u) setUser(JSON.parse(u));
-        } catch {}
-      }
+      } catch {}
       setBooting(false);
     };
     boot();
@@ -1503,21 +1534,26 @@ export default function App() {
   },[]);
 
   const login=(u:User)=>{
-    // Always store fresh user data on login
     AsyncStorage.setItem('user',JSON.stringify(u));
     setUser(u);
   };
   const logout=async()=>{
     setUser(null);
     setSelected(null);
-    // Clear ALL storage — prevents stale token/wrong user on next login
     await AsyncStorage.clear();
   };
+
+  // Wire up global 401 handler — auto-logout if token expires mid-session
+  useEffect(()=>{
+    setAuthFailHandler(()=>{ logout(); });
+  },[]);
 
   if(booting) return(
     <View style={{flex:1,alignItems:'center',justifyContent:'center',backgroundColor:C.bg}}>
       <Text style={{fontSize:64}}>🏓</Text>
-      <ActivityIndicator color="#007AFF" style={{marginTop:16}}/>
+      <Text style={{fontSize:22,fontWeight:'900',color:C.text,marginTop:12}}>TT Platform</Text>
+      <ActivityIndicator color="#007AFF" style={{marginTop:20}}/>
+      <Text style={{color:C.text3,fontSize:12,marginTop:12,textAlign:'center',paddingHorizontal:40}}>Loading...</Text>
     </View>
   );
   if(!user) return <AuthScreen onLogin={login}/>;
