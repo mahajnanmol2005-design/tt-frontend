@@ -208,8 +208,9 @@ const AuthScreen = ({onLogin}:{onLogin:(u:User)=>void}) => {
           <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="Password" placeholderTextColor={C.text3} value={password} onChangeText={setPassword} secureTextEntry/>
           {!isLogin&&<><Text style={[ss.lbl,{color:C.text3}]}>SKILL LEVEL</Text><ProfPicker value={proficiency} onChange={setProficiency}/></>}
           <TouchableOpacity style={[ss.btn,ss.btnBlue,loading&&ss.btnOff]} onPress={submit} disabled={loading}>
-            {loading?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>{isLogin?'Login':'Register'}</Text>}
+            {loading?<><ActivityIndicator color="#fff" style={{marginBottom:2}}/></>:<Text style={ss.btnTxt}>{isLogin?'Login':'Register'}</Text>}
           </TouchableOpacity>
+          {loading&&<Text style={{color:C.text3,fontSize:11,textAlign:'center',marginTop:6}}>Connecting to server... (first load may take 20-30s)</Text>}
           <TouchableOpacity onPress={()=>{setIsLogin(!isLogin);setError('');}} style={{marginTop:14,alignItems:'center'}}>
             <Text style={{color:C.text3,fontSize:14}}>{isLogin?"No account? ":"Have account? "}<Text style={{color:'#007AFF',fontWeight:'700'}}>{isLogin?'Register':'Login'}</Text></Text>
           </TouchableOpacity>
@@ -540,9 +541,9 @@ const TournamentsScreen = ({user,onSelect,onLogout}:{user:User;onSelect:(t:Tourn
     setLoadErr('');
     try{setList(await api('/tournaments'));}
     catch(e:any){
-      // Show helpful message if server is waking up
-      if(e.message?.includes('timed out')||e.message?.includes('Network')){
-        setLoadErr('Server is waking up... Pull down to refresh in a moment.');
+      if(e.message?.includes('timed out')||e.message?.includes('Network')||e.message?.includes('waking')){
+        setLoadErr('Server is starting up...
+Pull down to refresh in a moment.');
       }
     }
     setRefreshing(false);
@@ -711,10 +712,13 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
   const [addPlayerId,setAddPlayerId]=useState<number|null>(null);
   const [removePlayerId,setRemovePlayerId]=useState<number|null>(null);
   const loadingRef=useRef(false);
+  const hasLoadedRef=useRef(false); // tracks if first load completed
 
+  // Full load — fetches all data (members, rankings, history, current day)
+  // Only called on initial load, tab switches, and after mutations
   const load=useCallback(async()=>{
     if(loadingRef.current)return;
-    loadingRef.current=true;setLoading(true);
+    loadingRef.current=true;if(!hasLoadedRef.current)setLoading(true); // only show spinner on first load, not polls
     try{
       const d:TournamentDetail=await api(`/tournaments/${t.id}`);
       setDetail(d);
@@ -727,17 +731,47 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
         if(d.currentDay?.timerSeconds) setTimer(d.currentDay.timerSeconds);
       }
     }catch{}
-    setLoading(false);loadingRef.current=false;
+    setLoading(false);loadingRef.current=false;hasLoadedRef.current=true;
   },[t.id]);
 
-  const loadChat=useCallback(async()=>{
-    try{const m=await api(`/tournaments/${t.id}/chat`);setMsgs(prev=>{const newMsgs=m??[];const hasNew=newMsgs.length>prev.length;if(hasNew)setTimeout(()=>chatRef.current?.scrollToEnd({animated:true}),100);return newMsgs;});}catch{}
+  // Lightweight poll — only fetches current day matches (fast, small response)
+  // Used for auto-refresh on Today tab. Does NOT trigger loading spinner.
+  const loadToday=useCallback(async()=>{
+    try{
+      const r=await api(`/tournaments/${t.id}/today`);
+      setDetail(prev=>prev?{...prev, currentDay:r.currentDay??undefined}:prev);
+      if(r.currentDay?.status==='IN_PROGRESS'){
+        // Only reset timer if significantly off (>3s drift)
+        setTimer(prev=>Math.abs(prev-(r.currentDay.elapsedSeconds??0))>3?(r.currentDay.elapsedSeconds??0):prev);
+      }
+    }catch{}
+  },[t.id]);
+
+  const loadChat=useCallback(async(scrollToBottom=false)=>{
+    try{
+      const m=await api(`/tournaments/${t.id}/chat`);
+      setMsgs(prev=>{
+        const newMsgs=m??[];
+        const hasNew=newMsgs.length>prev.length||scrollToBottom;
+        if(hasNew)setTimeout(()=>chatRef.current?.scrollToEnd({animated:false}),120);
+        return newMsgs;
+      });
+    }catch{}
   },[t.id]);
 
   useEffect(()=>{load();return()=>clearInterval(timerRef.current);},[load]);
   useEffect(()=>{
-    if(tab==='Chat'){loadChat();const i=setInterval(loadChat,5000);return()=>clearInterval(i);}
-    else if(tab!=='Today') load();
+    if(tab==='Chat'){
+      loadChat(true); // load immediately + scroll to bottom on tab switch
+      const i=setInterval(loadChat,5000); // poll every 5s
+      return()=>clearInterval(i);
+    }
+    if(tab==='Today'){
+      load(); // full load once on tab switch
+      const i=setInterval(loadToday,6000); // lightweight poll every 6s
+      return()=>clearInterval(i);
+    }
+    load(); // Rankings / Members / History: full reload on tab switch
   },[tab]);
 
   const members=detail?.members??[];
@@ -771,17 +805,23 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
     catch(e:any){Alert.alert('Error',e.message);}
   };
   const endDay=()=>Alert.alert('End Day?','This will finalize rankings and compute MVP.',[{text:'Cancel',style:'cancel'},{text:'End Day',style:'destructive',onPress:async()=>{
-    try{const res:EndDayEntry[]=await api(`/tournaments/${t.id}/days/end`,{method:'POST'});setEndResult(res??[]);setShowEndModal(true);load();}
-    catch(e:any){Alert.alert('Error',e.message);}
+    try{
+      const res:EndDayEntry[]=await api(`/tournaments/${t.id}/days/end`,{method:'POST'});
+      setEndResult(res??[]);
+      load(); // refresh first so data is ready
+      setShowEndModal(true); // then show summary modal — this IS the feedback, no extra Alert
+    }catch(e:any){Alert.alert('Error',e.message);}
   }}]);
   const submitResult=async()=>{
     if(!showResult)return;
     const v1=parseInt(s1),v2=parseInt(s2);
     if(isNaN(v1)||isNaN(v2)||v1<0||v2<0)return Alert.alert('Error','Enter valid scores (0 or higher)');
-    if(v1===v2)return Alert.alert('Tie Not Allowed','Table tennis must have a winner. Scores cannot be equal.');
     if(v1===v2)return Alert.alert('Tie Not Allowed','Table tennis matches must have a winner. Scores cannot be equal.');
-    try{await api(`/matches/${showResult.id}/result`,{method:'POST',body:JSON.stringify({member1Score:v1,member2Score:v2})});setShowResult(null);setS1('');setS2('');load();}
-    catch(e:any){Alert.alert('Error',e.message);}
+    try{
+      await api(`/matches/${showResult.id}/result`,{method:'POST',body:JSON.stringify({member1Score:v1,member2Score:v2})});
+      setShowResult(null);setS1('');setS2('');
+      loadToday(); // fast refresh — updates match statuses immediately
+    }catch(e:any){Alert.alert('Error',e.message);}
   };
   const addGuest=async()=>{
     if(!guestName.trim())return Alert.alert('Error','Enter name');
@@ -797,9 +837,15 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
     try{await api(`/tournaments/${t.id}/members/${profEditMember.id}/proficiency`,{method:'PUT',body:JSON.stringify({proficiency:profEditValue})});setProfEditMember(null);load();}
     catch(e:any){Alert.alert('Error',e.message);}
   };
-  const makeAdmin=async(pid:number)=>{
-    try{await api(`/tournaments/${t.id}/admins`,{method:'POST',body:JSON.stringify({playerId:pid})});load();}
-    catch(e:any){Alert.alert('Error',e.message);}
+  const toggleAdmin=async(pid:number, isCurrentlyAdmin:boolean)=>{
+    try{
+      if(isCurrentlyAdmin){
+        await api(`/tournaments/${t.id}/admins/${pid}`,{method:'DELETE'});
+      } else {
+        await api(`/tournaments/${t.id}/admins`,{method:'POST',body:JSON.stringify({playerId:pid})});
+      }
+      load();
+    }catch(e:any){Alert.alert('Error',e.message);}
   };
   const saveCustomRanks=async()=>{
     try{await api(`/tournaments/${t.id}/rankings/custom`,{method:'POST',body:JSON.stringify({updates:Object.entries(rankEdits).map(([mid,rank])=>({memberId:parseInt(mid),rank:parseInt(rank)}))})});setShowRankEditor(false);load();}
@@ -812,11 +858,15 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
     setMentionQuery(null);
     try{
       await api(`/tournaments/${t.id}/chat`,{method:'POST',body:JSON.stringify({content:txt})});
-      await loadChat();
-      setTimeout(()=>chatRef.current?.scrollToEnd({animated:true}),150);
+      await loadChat(true);
     }catch(e:any){
-      setChatTxt(txt); // restore message if send failed
-      Alert.alert('Error','Message not sent. Check your connection.');
+      // Only restore text if it was a clear client-side failure, not a timeout
+      // (on timeout the message may have been delivered to server already)
+      if(!e.message?.includes('timed out')){
+        setChatTxt(txt);
+      }
+      // Don't show error popup for chat - silently fail and let polling pick it up
+      // If message truly failed, user will see their message didn't appear
     }
   };
   const loadH2H=async(m1:Member,m2:Member)=>{
@@ -1070,8 +1120,8 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
       )}
 
       {/* CHAT */}
-      {tab==='Chat'&&<View style={{flex:1,backgroundColor:C.bg}}>
-        <FlatList ref={chatRef} data={msgs??[]} keyExtractor={m=>String(m.id)} contentContainerStyle={{padding:10,gap:6}}
+      {tab==='Chat'&&<View style={{flex:1,backgroundColor:C.bg,display:'flex'}}>
+        <FlatList ref={chatRef} data={msgs??[]} keyExtractor={m=>String(m.id)} contentContainerStyle={{padding:10,gap:6,flexGrow:1,justifyContent:'flex-end'}}
           renderItem={({item:m})=>{
             const sys=m.type!=='TEXT',me=m.senderId===user.id;
             const bg:any={MATCH_RESULT:'#DCFCE7',DAY_STARTED:'#DBEAFE',DAY_ENDED:'#FEF9C3',SYSTEM:C.systemMsg};
@@ -1166,8 +1216,8 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
 
       {/* End Day Results */}
       <Modal visible={showEndModal} transparent animationType="slide" onRequestClose={()=>setShowEndModal(false)}>
-        <View style={ss.overlay}><View style={[ss.modal,{maxHeight:'92%'}]}>
-          <Text style={ss.modalTitle}>Day Summary 🏓</Text>
+        <View style={[ss.overlay,{backgroundColor:C.overlay}]}><View style={[ss.modal,{maxHeight:'92%',backgroundColor:C.modal}]}>
+          <Text style={[ss.modalTitle,{color:C.text}]}>Day Summary 🏓</Text>
           {mvpEntry&&<View style={{backgroundColor:'#FEF9C3',borderRadius:12,padding:14,alignItems:'center',marginBottom:12}}>
             <Text style={{fontSize:36}}>🏆</Text>
             <Text style={{color:'#CA8A04',fontWeight:'900',fontSize:18}}>MVP: {mvpEntry.displayName}</Text>
@@ -1177,7 +1227,7 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
           <ScrollView style={{maxHeight:340}}>
             {(endResult??[]).sort((a,b)=>a.rank-b.rank).map((e,i)=>(
               <View key={e.memberId} style={{flexDirection:'row',alignItems:'center',gap:10,paddingVertical:9,borderBottomWidth:1,borderBottomColor:C.cardBorder}}>
-                <Text style={{width:28,textAlign:'center',fontSize:14}}>{i===0?'🥇':i===1?'🥈':i===2?'🥉':`#${e.rank}`}</Text>
+                <Text style={{width:28,textAlign:'center',fontSize:14,color:C.text}}>{i===0?'🥇':i===1?'🥈':i===2?'🥉':`#${e.rank}`}</Text>
                 <Text style={{flex:1,color:C.text,fontWeight:'700'}}>{e.displayName}{e.isMvp?' 🏆':''}</Text>
                 <Text style={{color:'#22C55E',fontWeight:'700',fontSize:13}}>{e.matchesWon}W</Text>
                 <Text style={{color:(e.rankChange??0)>0?'#22C55E':(e.rankChange??0)<0?'#EF4444':C.text3,fontWeight:'800',fontSize:12}}>{(e.rankChange??0)>0?'▲':(e.rankChange??0)<0?'▼':'–'}{(e.rankChange??0)!==0?Math.abs(e.rankChange??0):''}</Text>
@@ -1236,9 +1286,9 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
               </View>
             </View>
             {members.map(m=>{const on=present.includes(m.id);return(
-              <TouchableOpacity key={m.id} style={{flexDirection:'row',alignItems:'center',gap:10,paddingVertical:9,borderBottomWidth:1,borderBottomColor:'#F8FAFC'}} onPress={()=>togglePresent(m.id)}>
-                <Text style={{fontSize:18}}>{on?'☑':'☐'}</Text>
-                <Text style={{flex:1,color:on?'#1E293B':'#94A3B8',fontWeight:on?'700':'400'}}>{m.displayName}</Text>
+              <TouchableOpacity key={m.id} style={{flexDirection:'row',alignItems:'center',gap:10,paddingVertical:9,borderBottomWidth:1,borderBottomColor:C.cardBorder}} onPress={()=>togglePresent(m.id)}>
+                <Text style={{fontSize:18,color:C.text}}>{on?'☑':'☐'}</Text>
+                <Text style={{flex:1,color:on?C.text:C.text3,fontWeight:on?'700':'400'}}>{m.displayName}</Text>
                 {m.isGuest&&<View style={ss.gTag}><Text style={ss.gTagTxt}>GUEST</Text></View>}
                 <ProfBadge p={m.proficiency}/>
               </TouchableOpacity>
@@ -1354,8 +1404,10 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
               const isAdm=(detail?.admins??[]).some(a=>a.playerId===m.playerId);
               return(<View key={m.id} style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',paddingVertical:12,borderBottomWidth:1,borderBottomColor:C.cardBorder}}>
                 <Text style={{color:C.text,fontWeight:'600'}}>{m.displayName}</Text>
-                <TouchableOpacity style={{paddingHorizontal:12,paddingVertical:5,borderRadius:8,borderWidth:1,borderColor:isAdm?'#22C55E':C.inpBorder,backgroundColor:isAdm?'#DCFCE7':C.bg3}} onPress={()=>!isAdm&&m.playerId&&makeAdmin(m.playerId)}>
-                  <Text style={{color:isAdm?'#16A34A':C.text3,fontWeight:'600',fontSize:12}}>{isAdm?'Admin ✓':'Make Admin'}</Text>
+                <TouchableOpacity
+                  style={{paddingHorizontal:12,paddingVertical:5,borderRadius:8,borderWidth:1,borderColor:isAdm?'#22C55E':C.inpBorder,backgroundColor:isAdm?'#DCFCE7':C.bg3}}
+                  onPress={()=>m.playerId&&Alert.alert(isAdm?'Remove Admin':'Make Admin',`${isAdm?'Remove admin from':'Make'} ${m.displayName}${isAdm?' ?':' an admin?'}`,[{text:'Cancel',style:'cancel'},{text:isAdm?'Remove':'Confirm',style:isAdm?'destructive':'default',onPress:()=>toggleAdmin(m.playerId!,isAdm)}])}>
+                  <Text style={{color:isAdm?'#16A34A':C.text3,fontWeight:'600',fontSize:12}}>{isAdm?'✓ Admin (tap to remove)':'Make Admin'}</Text>
                 </TouchableOpacity>
               </View>);
             })}
@@ -1457,6 +1509,9 @@ export default function App() {
 
   useEffect(()=>{
     const boot = async () => {
+      // Ping server in background to wake Render — don't await, don't block
+      fetch(`${API_URL}/health`).catch(()=>{});
+
       try {
         const [[,tok],[,u]] = await AsyncStorage.multiGet(['token','user']);
         if (tok && u) {
