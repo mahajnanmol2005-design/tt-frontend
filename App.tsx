@@ -83,7 +83,7 @@ const getLastSync = async (path: string): Promise<string|null> => {
     const cached = await AsyncStorage.getItem(`cache:${path}`);
     if (!cached) return null;
     const {ts} = JSON.parse(cached);
-    const diff = Math.round((Date.now() - ts) / 60000);
+    const diff = Math.floor((Date.now() - ts) / 60000);
     if (diff < 1) return 'just now';
     if (diff < 60) return `${diff}m ago`;
     return `${Math.round(diff/60)}h ago`;
@@ -123,7 +123,7 @@ const useTheme = () => {
   const scheme = useColorScheme();
   return scheme === 'dark' ? DARK : LIGHT;
 };
-interface User { id:number; username:string; email:string; displayName:string; proficiency?:string; }
+interface User { id:number; username:string; email:string; displayName:string; proficiency?:string; joinedAt?:string; }
 interface Member { id:number; playerId?:number; displayName:string; isGuest:boolean; currentRank:number; totalMatchesPlayed:number; totalMatchesWon:number; totalMatchesLost:number; winRate:number; daysPlayed:number; proficiency?:string; mvpCount?:number; }
 interface Match { id:number; matchNumber:number; member1Id:number; member2Id:number; member1Name:string; member2Name:string; member1Score:number; member2Score:number; winnerId?:number; status:string; member1WinProb:number; member2WinProb:number; team1Name?:string; team2Name?:string; team1Members?:string[]; team2Members?:string[]; }
 interface Team { id:number; name:string; matchesWon:number; matchesLost:number; members:Member[]; }
@@ -277,24 +277,16 @@ const RankingSkeleton = () => {
 
 // ── ANIMATED AUTH PROGRESS BAR ───────────────────────────────────────────────
 const AuthProgress = () => {
-  const anim = useRef(new Animated.Value(0)).current;
   const C = useTheme();
+  const [dots, setDots] = useState('.');
   useEffect(() => {
-    // Simulate progress: fast to 40%, slow crawl to 85%, then wait
-    Animated.sequence([
-      Animated.timing(anim, {toValue: 0.4, duration: 800, useNativeDriver: false}),
-      Animated.timing(anim, {toValue: 0.7, duration: 4000, useNativeDriver: false}),
-      Animated.timing(anim, {toValue: 0.85, duration: 8000, useNativeDriver: false}),
-    ]).start();
+    const id = setInterval(() => setDots(d => d.length >= 3 ? '.' : d + '.'), 500);
+    return () => clearInterval(id);
   }, []);
-  const width = anim.interpolate({inputRange:[0,1], outputRange:['0%','100%']});
   return (
-    <View style={{marginTop:10,gap:6}}>
-      <View style={{height:4,backgroundColor:C.bg3,borderRadius:2,overflow:'hidden'}}>
-        <Animated.View style={{height:'100%',width,backgroundColor:'#007AFF',borderRadius:2}}/>
-      </View>
-      <Text style={{color:C.text3,fontSize:11,textAlign:'center'}}>Connecting to server... (may take 20-30s on first load)</Text>
-    </View>
+    <Text style={{color:C.text3,fontSize:12,textAlign:'center',marginTop:8}}>
+      Connecting{dots} (server may take ~20s on first use)
+    </Text>
   );
 };
 
@@ -350,20 +342,29 @@ const AuthScreen = ({onLogin}:{onLogin:(u:User)=>void}) => {
     if (!email.trim()||!password) return Alert.alert('Error','Fill all fields');
     if (!isLogin&&!username.trim()) return Alert.alert('Error','Enter username');
     setLoading(true);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
     try {
       const body = isLogin
         ? {email:email.trim().toLowerCase(),password}
         : {username:username.trim().toLowerCase(),email:email.trim().toLowerCase(),password,proficiency,displayName:username.trim()};
       const res = await fetch(`${API_URL}/auth/${isLogin?'login':'register'}`, {
         method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
       const text = await res.text();
       const data = text ? JSON.parse(text) : {};
       if (!res.ok) { setError(data.message||'Server error'); setLoading(false); return; }
       await AsyncStorage.setItem('token', data.token);
       onLogin({id:data.userId,username:data.username,email:data.email,displayName:data.displayName||data.username,proficiency:data.proficiency});
     } catch (e:any) {
-      setError(`Connection failed. Check your internet connection.\n\nError: ${e.message}`);
+      clearTimeout(timeoutId);
+      if (e.name === 'AbortError') {
+        setError('Server is waking up (takes ~20s on first use). Please try again.');
+      } else {
+        setError(`Connection failed. Check your internet.\n\nError: ${e.message}`);
+      }
     }
     setLoading(false);
   };
@@ -645,36 +646,71 @@ const StatsModal = ({memberId,memberName,tournamentId,onClose}:{memberId:number;
 
   const getAI=async()=>{
     if(!stats)return;setAiLoading(true);
-    const t=await callAI(`Table tennis player: ${stats.displayName}. Rank #${stats.currentRank??'?'}, ${stats.totalMatchesWon}W/${stats.totalMatchesPlayed} matches, ${stats.mvpCount} MVPs. Partner: ${stats.bestPartnerName??'none'}. Rival: ${stats.bestRivalName??'none'}. Skill: ${stats.proficiency??'Unknown'}. Give 2 concise personalised coaching tips.`);
-    setAiText(t);setAiLoading(false);
+    // Compute recent trend from last 3 vs first 3 daily stats
+    const ds=stats.dailyStats??[];
+    const recentAvg=ds.slice(-3).reduce((s,d)=>s+d.dayScore,0)/(ds.slice(-3).length||1);
+    const earlyAvg=ds.slice(0,3).reduce((s,d)=>s+d.dayScore,0)/(ds.slice(0,3).length||1);
+    const trend=ds.length<3?'stable':recentAvg>earlyAvg+0.05?'improving':recentAvg<earlyAvg-0.05?'declining':'stable';
+    try{
+      const token=await AsyncStorage.getItem('token');
+      const res=await fetch(`${API_URL}/ai/analyze`,{
+        method:'POST',
+        headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},
+        body:JSON.stringify({
+          playerName:stats.displayName,rank:stats.currentRank,wins:stats.totalMatchesWon,
+          played:stats.totalMatchesPlayed,mvps:stats.mvpCount,proficiency:stats.proficiency??'Intermediate',
+          bestPartner:stats.bestPartnerName??'none',bestRival:stats.bestRivalName??'none',
+          daysPlayed:stats.daysPlayed,recentTrend:trend,
+        }),
+      });
+      const d=await res.json();
+      setAiText(d.response||d.text||'AI unavailable. Try again.');
+    }catch{setAiText('AI unavailable. Try again.');}
+    setAiLoading(false);
   };
 
+  const [showAnalytics,setShowAnalytics]=useState(false);
   const mvpDays=(stats?.dailyStats??[]).filter(d=>d.isMvp);
 
   return(
+    <>
+    {showAnalytics&&stats&&<AnalyticsDashboard stats={stats} onClose={()=>setShowAnalytics(false)}/>}
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
       <View style={ss.overlay}><View style={[ss.modal,{maxHeight:'92%'}]}>
         <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-          <View><Text style={ss.modalTitle}>{memberName}</Text>{stats?.proficiency&&<ProfBadge p={stats.proficiency}/>}</View>
+          <View style={{flex:1}}><Text style={ss.modalTitle} numberOfLines={1}>{memberName}</Text>{stats?.proficiency&&<ProfBadge p={stats.proficiency}/>}</View>
           <TouchableOpacity onPress={onClose} style={{padding:4}}><Text style={{color:'#EF4444',fontWeight:'700',fontSize:18}}>✕</Text></TouchableOpacity>
         </View>
         {loading&&<ActivityIndicator size="large" color="#007AFF" style={{padding:40}}/>}
         {!!err&&!loading&&<Text style={{color:'#EF4444',textAlign:'center',padding:20,fontSize:13}}>{err}</Text>}
         {!loading&&!err&&stats&&<ScrollView showsVerticalScrollIndicator={false}>
+          {/* Quick KPIs */}
           <View style={{flexDirection:'row',flexWrap:'wrap',gap:8,marginBottom:12}}>
-            {([['Rank','#'+(stats.currentRank??'?'),'#007AFF'],['W/M',`${stats.totalMatchesWon}/${stats.totalMatchesPlayed}`,'#22C55E'],['MVPs',String(stats.mvpCount??0),'#F59E0B'],['Days',String(stats.daysPlayed??0),'#7C3AED']] as [string,string,string][]).map(([l,v,c])=>(
+            {([['Rank','#'+(stats.currentRank??'?'),'#007AFF'],['Win%',stats.totalMatchesPlayed?Math.round(stats.totalMatchesWon/stats.totalMatchesPlayed*100)+'%':'–','#22C55E'],['MVPs',String(stats.mvpCount??0),'#F59E0B'],['Score',String(computeContributionScore(stats)),'#7C3AED']] as [string,string,string][]).map(([l,v,c])=>(
               <View key={l} style={{flex:1,minWidth:68,backgroundColor:c+'18',borderRadius:10,padding:10,alignItems:'center'}}>
                 <Text style={{color:c,fontWeight:'900',fontSize:17}}>{v}</Text>
                 <Text style={{color:c,fontSize:10,fontWeight:'600'}}>{l}</Text>
               </View>
             ))}
           </View>
+
+          {/* Analytics button - prominent */}
+          <TouchableOpacity style={{backgroundColor:'#EFF6FF',borderRadius:12,padding:12,marginBottom:10,flexDirection:'row',alignItems:'center',gap:10,borderWidth:1,borderColor:'#BFDBFE'}} onPress={()=>setShowAnalytics(true)}>
+            <Text style={{fontSize:22}}>📊</Text>
+            <View style={{flex:1}}>
+              <Text style={{color:'#1D4ED8',fontWeight:'800',fontSize:14}}>Full Analytics Dashboard</Text>
+              <Text style={{color:'#3B82F6',fontSize:11}}>Heatmaps · Charts · Timeline · Rank Graph</Text>
+            </View>
+            <Text style={{color:'#3B82F6',fontSize:18}}>›</Text>
+          </TouchableOpacity>
+
+          {/* Win rate bar */}
           <View style={{backgroundColor:'#F8FAFC',borderRadius:10,padding:12,marginBottom:8}}>
-            <Text style={{color:'#94A3B8',fontSize:11,fontWeight:'700'}}>WINS / MATCHES RATIO</Text>
+            <Text style={{color:'#94A3B8',fontSize:11,fontWeight:'700'}}>WIN RATE</Text>
             <View style={{height:18,backgroundColor:'#E2E8F0',borderRadius:10,overflow:'hidden',marginTop:6}}>
               <View style={{height:'100%',width:`${stats.totalMatchesPlayed?Math.min(100,stats.totalMatchesWon/stats.totalMatchesPlayed*100):0}%`,backgroundColor:'#22C55E',borderRadius:10}}/>
             </View>
-            <Text style={{color:'#1E293B',fontWeight:'700',marginTop:4,fontSize:13}}>{stats.totalMatchesWon}W / {stats.totalMatchesPlayed} matches ({stats.totalMatchesPlayed?Math.round(stats.totalMatchesWon/stats.totalMatchesPlayed*100):0}%)</Text>
+            <Text style={{color:'#1E293B',fontWeight:'700',marginTop:4,fontSize:13}}>{stats.totalMatchesWon}W / {stats.totalMatchesPlayed} ({stats.totalMatchesPlayed?Math.round(stats.totalMatchesWon/stats.totalMatchesPlayed*100):0}%)</Text>
           </View>
           <RankGraph dailyStats={stats.dailyStats??[]}/>
           {stats.bestPartnerName&&<View style={[ss.card,{backgroundColor:'#DCFCE7',marginTop:6,padding:10}]}><Text style={{color:'#16A34A',fontWeight:'700'}}>🤝 Best Partner: {stats.bestPartnerName}</Text></View>}
@@ -691,17 +727,412 @@ const StatsModal = ({memberId,memberName,tournamentId,onClose}:{memberId:number;
             ))}
           </View>}
           <TouchableOpacity style={[ss.btn,{backgroundColor:'#FAF5FF',borderWidth:1,borderColor:'#DDD6FE',marginTop:12}]} onPress={getAI} disabled={aiLoading}>
-            {aiLoading?<ActivityIndicator color="#7C3AED"/>:<Text style={{color:'#7C3AED',fontWeight:'700'}}>🤖 Get AI Coaching Insight</Text>}
+            {aiLoading?<ActivityIndicator color="#7C3AED"/>:<Text style={{color:'#7C3AED',fontWeight:'700'}}>🤖 Get Full AI Analysis (5 Sections)</Text>}
           </TouchableOpacity>
-          {!!aiText&&<View style={ss.aiBox}><Text style={ss.aiTxt}>{aiText}</Text></View>}
+          {!!aiText&&<View style={[ss.aiBox,{backgroundColor:'#FAF5FF',borderColor:'#DDD6FE'}]}><Text style={[ss.aiTxt,{color:'#6D28D9',lineHeight:20}]}>{aiText}</Text></View>}
         </ScrollView>}
       </View></View>
+    </Modal>
+    </>
+  );
+};
+
+
+// ── USER SETTINGS MODAL ───────────────────────────────────────────────────────
+const UserSettingsModal = ({user,onClose,onUpdate,onLogout}:{user:User;onClose:()=>void;onUpdate:(u:User)=>void;onLogout:()=>void}) => {
+  const C = useTheme();
+  const [tab,setTab]=useState<'Profile'|'Account'>('Profile');
+  const [displayName,setDisplayName]=useState(user.displayName);
+  const [proficiency,setProficiency]=useState(user.proficiency||'Intermediate');
+  const [currentPwd,setCurrentPwd]=useState('');
+  const [newPwd,setNewPwd]=useState('');
+  const [confirmPwd,setConfirmPwd]=useState('');
+  const [saving,setSaving]=useState(false);
+  const [msg,setMsg]=useState('');
+  const [msgType,setMsgType]=useState<'ok'|'err'>('ok');
+
+  const showMsg=(text:string,type:'ok'|'err'='ok')=>{setMsg(text);setMsgType(type);setTimeout(()=>setMsg(''),3000);};
+
+  const saveProfile=async()=>{
+    if(!displayName.trim()){showMsg('Name cannot be empty','err');return;}
+    setSaving(true);
+    try{
+      const updated=await api('/players/me',{method:'PUT',body:JSON.stringify({displayName:displayName.trim(),proficiency})});
+      onUpdate({...user,displayName:updated.displayName||displayName.trim(),proficiency:updated.proficiency||proficiency});
+      showMsg('Profile updated!','ok');
+    }catch(e:any){showMsg(e.message||'Update failed','err');}
+    setSaving(false);
+  };
+
+  const changePassword=async()=>{
+    if(!currentPwd||!newPwd){showMsg('Fill all password fields','err');return;}
+    if(newPwd!==confirmPwd){showMsg('Passwords do not match','err');return;}
+    if(newPwd.length<6){showMsg('Password must be 6+ characters','err');return;}
+    setSaving(true);
+    try{
+      await api('/players/me/password',{method:'POST',body:JSON.stringify({currentPassword:currentPwd,newPassword:newPwd})});
+      setCurrentPwd('');setNewPwd('');setConfirmPwd('');
+      showMsg('Password changed!','ok');
+    }catch(e:any){showMsg(e.message||'Failed','err');}
+    setSaving(false);
+  };
+
+  const winRate=0; // placeholder — could derive from aggregated stats if available globally
+  const initials=user.displayName.split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase();
+
+  return(
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <View style={[ss.overlay,{backgroundColor:C.overlay}]}>
+        <View style={[ss.modal,{maxHeight:'90%',backgroundColor:C.modal}]}>
+          {/* Header */}
+          <View style={{flexDirection:'row',alignItems:'center',marginBottom:16,gap:12}}>
+            <View style={{width:52,height:52,borderRadius:26,backgroundColor:'#007AFF',alignItems:'center',justifyContent:'center'}}>
+              <Text style={{color:'#fff',fontWeight:'900',fontSize:20}}>{initials}</Text>
+            </View>
+            <View style={{flex:1}}>
+              <Text style={{color:C.text,fontWeight:'900',fontSize:18}}>{user.displayName}</Text>
+              <Text style={{color:C.text3,fontSize:12}}>@{user.username}</Text>
+            </View>
+            <TouchableOpacity onPress={onClose} style={{padding:6}}>
+              <Text style={{color:C.text3,fontSize:22}}>✕</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Tabs */}
+          <View style={{flexDirection:'row',backgroundColor:C.bg3,borderRadius:10,padding:3,marginBottom:16}}>
+            {(['Profile','Account'] as const).map(t=>(
+              <TouchableOpacity key={t} style={{flex:1,paddingVertical:7,borderRadius:8,backgroundColor:tab===t?C.bg2:'transparent',alignItems:'center'}} onPress={()=>setTab(t)}>
+                <Text style={{color:tab===t?'#007AFF':C.text3,fontWeight:'700',fontSize:13}}>{t}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <ScrollView showsVerticalScrollIndicator={false}>
+            {tab==='Profile'&&<>
+              <Text style={[ss.lbl,{color:C.text3}]}>DISPLAY NAME</Text>
+              <TextInput
+                style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]}
+                value={displayName} onChangeText={setDisplayName}
+                placeholder="Your display name" placeholderTextColor={C.text3}
+                maxLength={30}
+              />
+              <Text style={{color:C.text3,fontSize:11,marginTop:-8,marginBottom:10,textAlign:'right'}}>{displayName.length}/30</Text>
+
+              <Text style={[ss.lbl,{color:C.text3}]}>SKILL LEVEL</Text>
+              <ProfPicker value={proficiency} onChange={setProficiency}/>
+
+              <Text style={[ss.lbl,{color:C.text3,marginTop:4}]}>EMAIL</Text>
+              <View style={{backgroundColor:C.bg3,borderRadius:10,padding:12,marginBottom:10}}>
+                <Text style={{color:C.text2,fontSize:14}}>{user.email}</Text>
+              </View>
+
+              <TouchableOpacity style={[ss.btn,ss.btnBlue,saving&&ss.btnOff,{marginTop:4}]} onPress={saveProfile} disabled={saving}>
+                {saving?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>💾 Save Profile</Text>}
+              </TouchableOpacity>
+            </>}
+
+            {tab==='Account'&&<>
+              <Text style={[ss.lbl,{color:C.text3}]}>CHANGE PASSWORD</Text>
+              <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="Current password" placeholderTextColor={C.text3} value={currentPwd} onChangeText={setCurrentPwd} secureTextEntry/>
+              <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="New password (6+ chars)" placeholderTextColor={C.text3} value={newPwd} onChangeText={setNewPwd} secureTextEntry/>
+              <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="Confirm new password" placeholderTextColor={C.text3} value={confirmPwd} onChangeText={setConfirmPwd} secureTextEntry/>
+              <TouchableOpacity style={[ss.btn,ss.btnBlue,saving&&ss.btnOff]} onPress={changePassword} disabled={saving}>
+                {saving?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>🔐 Change Password</Text>}
+              </TouchableOpacity>
+
+              <View style={{height:1,backgroundColor:C.cardBorder,marginVertical:16}}/>
+
+              <TouchableOpacity style={[ss.btn,{backgroundColor:'#FEF2F2',borderWidth:1,borderColor:'#FECACA'}]} onPress={()=>{
+                Alert.alert('Logout','Are you sure?',[{text:'Cancel',style:'cancel'},{text:'Logout',style:'destructive',onPress:()=>{onClose();onLogout();}}]);
+              }}>
+                <Text style={{color:'#EF4444',fontWeight:'700'}}>Logout</Text>
+              </TouchableOpacity>
+
+              <Text style={{color:C.text3,fontSize:11,textAlign:'center',marginTop:16}}>Account: @{user.username} · {user.email}</Text>
+            </>}
+
+            {!!msg&&<View style={{backgroundColor:msgType==='ok'?'#DCFCE7':'#FEE2E2',borderRadius:10,padding:10,marginTop:10}}>
+              <Text style={{color:msgType==='ok'?'#16A34A':'#DC2626',fontWeight:'600',textAlign:'center'}}>{msg}</Text>
+            </View>}
+          </ScrollView>
+        </View>
+      </View>
     </Modal>
   );
 };
 
+// ── ANALYTICS HELPERS ─────────────────────────────────────────────────────────
+// Compute contribution score: weighted combo of win rate, matches played, MVPs, consistency
+const computeContributionScore = (stats: MemberStats): number => {
+  const wr = stats.totalMatchesPlayed > 0 ? stats.totalMatchesWon / stats.totalMatchesPlayed : 0;
+  const matchScore = Math.min(stats.totalMatchesPlayed / 30, 1); // normalise, cap at 30
+  const mvpBonus = Math.min((stats.mvpCount ?? 0) * 0.05, 0.25);
+  const consistencyDays = stats.daysPlayed > 0 ? Math.min(stats.daysPlayed / 10, 1) : 0;
+  const raw = (wr * 0.45) + (matchScore * 0.25) + (mvpBonus) + (consistencyDays * 0.2) + (wr * consistencyDays * 0.1);
+  return Math.round(Math.min(raw, 1) * 100);
+};
+
+// Heatmap — last 8 days presence/performance from dailyStats
+const PerformanceHeatmap = ({dailyStats,C}:{dailyStats:MemberStats['dailyStats'];C:any}) => {
+  if(!dailyStats||dailyStats.length===0) return <Text style={{color:C.text3,fontSize:12,textAlign:'center',padding:8}}>No session data yet</Text>;
+  const recent=[...dailyStats].slice(-12);
+  const maxScore=Math.max(...recent.map(d=>d.dayScore||0),1);
+  const getColor=(score:number,isMvp:boolean)=>{
+    if(isMvp) return '#F59E0B';
+    const t=score/maxScore;
+    if(t>0.7) return '#22C55E';
+    if(t>0.4) return '#3B82F6';
+    if(t>0.1) return '#94A3B8';
+    return '#E2E8F0';
+  };
+  return(
+    <View style={{marginVertical:6}}>
+      <Text style={[ss.secLbl,{color:C.text3}]}>PERFORMANCE HEATMAP</Text>
+      <View style={{flexDirection:'row',flexWrap:'wrap',gap:5,marginTop:4}}>
+        {recent.map((d,i)=>(
+          <View key={i} style={{alignItems:'center',gap:2,width:44}}>
+            <View style={{width:36,height:36,borderRadius:8,backgroundColor:getColor(d.dayScore||0,d.isMvp),alignItems:'center',justifyContent:'center'}}>
+              {d.isMvp&&<Text style={{fontSize:14}}>🏆</Text>}
+              {!d.isMvp&&<Text style={{color:'#fff',fontSize:10,fontWeight:'800'}}>{d.matchesWon}W</Text>}
+            </View>
+            <Text style={{color:C.text3,fontSize:8,textAlign:'center'}}>D{d.dayNumber}</Text>
+          </View>
+        ))}
+      </View>
+      <View style={{flexDirection:'row',gap:8,marginTop:6,alignItems:'center'}}>
+        {[['#E2E8F0','Low'],['#94A3B8','Med'],['#3B82F6','Good'],['#22C55E','High'],['#F59E0B','MVP']].map(([c,l])=>(
+          <View key={l} style={{flexDirection:'row',alignItems:'center',gap:3}}>
+            <View style={{width:8,height:8,borderRadius:2,backgroundColor:c}}/>
+            <Text style={{color:C.text3,fontSize:9}}>{l}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+};
+
+// Win Rate Arc — like a gauge/donut
+const WinRateGauge = ({winRate,C}:{winRate:number;C:any}) => {
+  const pct=Math.round(winRate*100);
+  const color=pct>=60?'#22C55E':pct>=40?'#3B82F6':pct>=25?'#F59E0B':'#EF4444';
+  const label=pct>=60?'Excellent':pct>=40?'Good':pct>=25?'Average':'Developing';
+  return(
+    <View style={{alignItems:'center',paddingVertical:8}}>
+      <View style={{width:100,height:100,borderRadius:50,borderWidth:10,borderColor:C.bg3,alignItems:'center',justifyContent:'center',position:'relative'}}>
+        <View style={{width:100,height:100,borderRadius:50,borderWidth:10,borderColor:color,position:'absolute',opacity:pct/100,transform:[{rotate:'-90deg'}]}}/>
+        <Text style={{color,fontWeight:'900',fontSize:24}}>{pct}%</Text>
+      </View>
+      <Text style={{color,fontWeight:'700',fontSize:13,marginTop:4}}>{label}</Text>
+      <Text style={{color:C.text3,fontSize:11}}>Win Rate</Text>
+    </View>
+  );
+};
+
+// Match history timeline
+const MatchTimeline = ({dailyStats,C}:{dailyStats:MemberStats['dailyStats'];C:any}) => {
+  if(!dailyStats||dailyStats.length===0) return <Text style={{color:C.text3,fontSize:12,textAlign:'center',padding:8}}>No match history yet</Text>;
+  return(
+    <View style={{marginVertical:4}}>
+      <Text style={[ss.secLbl,{color:C.text3}]}>MATCH HISTORY TIMELINE</Text>
+      {[...dailyStats].reverse().map((d,i)=>{
+        const wr=d.matchesPlayed>0?d.matchesWon/d.matchesPlayed:0;
+        const barW=`${Math.round(wr*100)}%`;
+        return(
+          <View key={i} style={{flexDirection:'row',alignItems:'center',gap:8,paddingVertical:6,borderBottomWidth:1,borderBottomColor:C.cardBorder}}>
+            <View style={{width:28,alignItems:'center'}}>
+              {d.isMvp?<Text style={{fontSize:14}}>🏆</Text>:<Text style={{color:C.text3,fontSize:12,fontWeight:'700'}}>D{d.dayNumber}</Text>}
+            </View>
+            <View style={{flex:1}}>
+              <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:3}}>
+                <Text style={{color:C.text,fontSize:12,fontWeight:'600'}}>{d.matchesWon}W / {d.matchesPlayed} played</Text>
+                <Text style={{color:C.text3,fontSize:11}}>· {d.pointsScored}pts</Text>
+                {d.isMvp&&<View style={{backgroundColor:'#FEF9C3',paddingHorizontal:5,paddingVertical:1,borderRadius:4}}><Text style={{color:'#CA8A04',fontSize:9,fontWeight:'800'}}>MVP</Text></View>}
+              </View>
+              <View style={{height:6,backgroundColor:C.bg3,borderRadius:3,overflow:'hidden'}}>
+                <View style={{height:'100%',width:barW,backgroundColor:wr>=0.6?'#22C55E':wr>=0.4?'#3B82F6':'#F59E0B',borderRadius:3}}/>
+              </View>
+            </View>
+            <View style={{alignItems:'flex-end',minWidth:36}}>
+              <Text style={{color:d.rank===1?'#F59E0B':d.rank<=3?'#22C55E':C.text2,fontWeight:'800',fontSize:13}}>#{d.rank}</Text>
+              <Text style={{color:C.text3,fontSize:9}}>rank</Text>
+            </View>
+          </View>
+        );
+      })}
+    </View>
+  );
+};
+
+// Rank progression line graph (improved from basic bars)
+const RankGraphV2 = ({dailyStats,C:Cext}:{dailyStats:MemberStats['dailyStats'];C?:any}) => {
+  const C = Cext || useTheme();
+  const stats = dailyStats??[];
+  if(stats.length<2) return <Text style={{color:C.text3,fontSize:12,textAlign:'center',padding:8}}>Play 2+ sessions to see rank progression</Text>;
+  const maxR=Math.max(...stats.map(d=>d.rank??1),1);
+  const minR=Math.min(...stats.map(d=>d.rank??1));
+  const range=Math.max(maxR-minR,1);
+  const H=70;
+  return(
+    <View style={{marginVertical:8}}>
+      <Text style={[ss.secLbl,{color:C.text3}]}>RANKING PROGRESSION</Text>
+      <View style={{flexDirection:'row',alignItems:'flex-end',gap:4,height:H+20,paddingBottom:16}}>
+        {stats.map((d,i)=>{
+          // Higher rank = taller bar (rank 1 = tallest)
+          const h=Math.max(8,((maxR-(d.rank??maxR))/range)*H);
+          const clr=d.rank===1?'#F59E0B':d.rank<=3?'#22C55E':d.rank<=Math.ceil(maxR/2)?'#3B82F6':'#94A3B8';
+          return(
+            <View key={i} style={{flex:1,alignItems:'center',gap:2,height:H+16,justifyContent:'flex-end'}}>
+              {d.isMvp&&<Text style={{fontSize:8,marginBottom:1}}>🏆</Text>}
+              <View style={{height:h,width:'75%',backgroundColor:clr,borderRadius:3,borderTopLeftRadius:4,borderTopRightRadius:4}}/>
+              <Text style={{color:C.text3,fontSize:7,textAlign:'center'}}>#{d.rank}</Text>
+              <Text style={{color:C.text3,fontSize:7}}>D{d.dayNumber}</Text>
+            </View>
+          );
+        })}
+      </View>
+      <View style={{flexDirection:'row',justifyContent:'space-between'}}>
+        <Text style={{color:C.text3,fontSize:10}}>← Earlier</Text>
+        <Text style={{color:C.text3,fontSize:10}}>Recent →</Text>
+      </View>
+    </View>
+  );
+};
+
+// ── ANALYTICS DASHBOARD (full modal) ─────────────────────────────────────────
+const AnalyticsDashboard = ({stats,onClose}:{stats:MemberStats;onClose:()=>void}) => {
+  const C = useTheme();
+  const contribution = computeContributionScore(stats);
+  const winRate = stats.totalMatchesPlayed > 0 ? stats.totalMatchesWon / stats.totalMatchesPlayed : 0;
+  const avgPointsPerDay = stats.daysPlayed > 0
+    ? Math.round((stats.dailyStats??[]).reduce((s,d)=>s+d.pointsScored,0) / stats.daysPlayed)
+    : 0;
+  const bestDay = (stats.dailyStats??[]).reduce((best,d)=>(!best||d.dayScore>best.dayScore)?d:best, null as any);
+  const streak = (() => {
+    let s=0;
+    for(let i=(stats.dailyStats??[]).length-1;i>=0;i--){
+      const d=stats.dailyStats[i];
+      if(d.matchesWon>d.matchesPlayed/2) s++; else break;
+    }
+    return s;
+  })();
+
+  return(
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <View style={[ss.overlay,{backgroundColor:C.overlay}]}>
+        <View style={[ss.modal,{maxHeight:'95%',backgroundColor:C.modal}]}>
+          <View style={{flexDirection:'row',alignItems:'center',marginBottom:14}}>
+            <Text style={{fontSize:22}}>📊</Text>
+            <View style={{flex:1,marginLeft:8}}>
+              <Text style={[ss.modalTitle,{color:C.text,marginBottom:0}]}>Analytics</Text>
+              <Text style={{color:C.text3,fontSize:12}}>{stats.displayName}</Text>
+            </View>
+            <TouchableOpacity onPress={onClose} style={{padding:6}}><Text style={{color:C.text3,fontSize:22}}>✕</Text></TouchableOpacity>
+          </View>
+
+          <ScrollView showsVerticalScrollIndicator={false}>
+            {/* KPI Row */}
+            <View style={{flexDirection:'row',gap:8,marginBottom:12}}>
+              {([
+                ['🏆','#'+stats.currentRank,'Rank','#F59E0B'],
+                [String(Math.round(winRate*100))+'%','Win Rate','','#22C55E'],
+                [String(contribution),'Score','','#7C3AED'],
+                [String(stats.mvpCount??0),'MVPs','','#EF4444'],
+              ] as any[]).map(([v,l,_,c],i)=>(
+                <View key={i} style={{flex:1,backgroundColor:c+'18',borderRadius:12,padding:10,alignItems:'center'}}>
+                  <Text style={{color:c,fontWeight:'900',fontSize:16,textAlign:'center'}}>{v}</Text>
+                  <Text style={{color:c,fontSize:9,fontWeight:'700',textAlign:'center',marginTop:1}}>{l}</Text>
+                </View>
+              ))}
+            </View>
+
+            {/* Contribution Score */}
+            <View style={{backgroundColor:C.card,borderRadius:14,padding:14,marginBottom:10,shadowColor:'#000',shadowOpacity:0.04,shadowRadius:6,elevation:1}}>
+              <Text style={[ss.secLbl,{color:C.text3}]}>PLAYER CONTRIBUTION SCORE</Text>
+              <View style={{flexDirection:'row',alignItems:'center',gap:14}}>
+                <View style={{flex:1}}>
+                  <View style={{height:14,backgroundColor:C.bg3,borderRadius:7,overflow:'hidden',marginVertical:6}}>
+                    <View style={{height:'100%',width:`${contribution}%`,backgroundColor:contribution>=70?'#22C55E':contribution>=45?'#3B82F6':'#F59E0B',borderRadius:7}}/>
+                  </View>
+                  <Text style={{color:C.text3,fontSize:11}}>{contribution>=70?'Top performer 🔥':contribution>=45?'Solid contributor 💪':'Keep climbing 📈'}</Text>
+                </View>
+                <Text style={{color:'#7C3AED',fontWeight:'900',fontSize:28}}>{contribution}</Text>
+              </View>
+              <Text style={{color:C.text3,fontSize:10,marginTop:4}}>Weighted: wins(45%) + activity(25%) + attendance(20%) + MVPs(10%)</Text>
+            </View>
+
+            {/* Win Rate Gauge */}
+            <View style={{backgroundColor:C.card,borderRadius:14,padding:14,marginBottom:10,shadowColor:'#000',shadowOpacity:0.04,shadowRadius:6,elevation:1}}>
+              <Text style={[ss.secLbl,{color:C.text3}]}>WIN RATE BREAKDOWN</Text>
+              <View style={{flexDirection:'row',alignItems:'center'}}>
+                <WinRateGauge winRate={winRate} C={C}/>
+                <View style={{flex:1,gap:6,paddingLeft:12}}>
+                  <View style={{flexDirection:'row',justifyContent:'space-between'}}>
+                    <Text style={{color:C.text3,fontSize:12}}>Wins</Text>
+                    <Text style={{color:'#22C55E',fontWeight:'700',fontSize:12}}>{stats.totalMatchesWon}</Text>
+                  </View>
+                  <View style={{flexDirection:'row',justifyContent:'space-between'}}>
+                    <Text style={{color:C.text3,fontSize:12}}>Losses</Text>
+                    <Text style={{color:'#EF4444',fontWeight:'700',fontSize:12}}>{stats.totalMatchesLost||stats.totalMatchesPlayed-stats.totalMatchesWon}</Text>
+                  </View>
+                  <View style={{flexDirection:'row',justifyContent:'space-between'}}>
+                    <Text style={{color:C.text3,fontSize:12}}>Sessions</Text>
+                    <Text style={{color:'#007AFF',fontWeight:'700',fontSize:12}}>{stats.daysPlayed}</Text>
+                  </View>
+                  <View style={{flexDirection:'row',justifyContent:'space-between'}}>
+                    <Text style={{color:C.text3,fontSize:12}}>Win streak</Text>
+                    <Text style={{color:'#F59E0B',fontWeight:'700',fontSize:12}}>{streak} days 🔥</Text>
+                  </View>
+                </View>
+              </View>
+            </View>
+
+            {/* Performance Heatmap */}
+            <View style={{backgroundColor:C.card,borderRadius:14,padding:14,marginBottom:10,shadowColor:'#000',shadowOpacity:0.04,shadowRadius:6,elevation:1}}>
+              <PerformanceHeatmap dailyStats={stats.dailyStats??[]} C={C}/>
+            </View>
+
+            {/* Rank Progression */}
+            <View style={{backgroundColor:C.card,borderRadius:14,padding:14,marginBottom:10,shadowColor:'#000',shadowOpacity:0.04,shadowRadius:6,elevation:1}}>
+              <RankGraphV2 dailyStats={stats.dailyStats??[]} C={C}/>
+            </View>
+
+            {/* Best Day */}
+            {bestDay&&<View style={{backgroundColor:'#FEF9C3',borderRadius:14,padding:14,marginBottom:10,flexDirection:'row',alignItems:'center',gap:12}}>
+              <Text style={{fontSize:28}}>⭐</Text>
+              <View style={{flex:1}}>
+                <Text style={{color:'#92400E',fontWeight:'800',fontSize:14}}>Best Session: Day {bestDay.dayNumber}</Text>
+                <Text style={{color:'#CA8A04',fontSize:12}}>{bestDay.matchesWon}W/{bestDay.matchesPlayed} · {bestDay.pointsScored}pts · Rank #{bestDay.rank}</Text>
+              </View>
+            </View>}
+
+            {/* Match History Timeline */}
+            <View style={{backgroundColor:C.card,borderRadius:14,padding:14,marginBottom:10,shadowColor:'#000',shadowOpacity:0.04,shadowRadius:6,elevation:1}}>
+              <MatchTimeline dailyStats={stats.dailyStats??[]} C={C}/>
+            </View>
+
+            {/* Partners & Rivals */}
+            <View style={{flexDirection:'row',gap:8,marginBottom:10}}>
+              {stats.bestPartnerName&&<View style={{flex:1,backgroundColor:'#DCFCE7',borderRadius:12,padding:12}}>
+                <Text style={{fontSize:18,textAlign:'center'}}>🤝</Text>
+                <Text style={{color:'#16A34A',fontWeight:'800',fontSize:12,textAlign:'center'}}>Best Partner</Text>
+                <Text style={{color:'#166534',fontSize:13,textAlign:'center',marginTop:2}}>{stats.bestPartnerName}</Text>
+              </View>}
+              {stats.bestRivalName&&<View style={{flex:1,backgroundColor:'#FEE2E2',borderRadius:12,padding:12}}>
+                <Text style={{fontSize:18,textAlign:'center'}}>⚔️</Text>
+                <Text style={{color:'#DC2626',fontWeight:'800',fontSize:12,textAlign:'center'}}>Rival</Text>
+                <Text style={{color:'#991B1B',fontSize:13,textAlign:'center',marginTop:2}}>{stats.bestRivalName}</Text>
+              </View>}
+            </View>
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+};
+
+
 // ── TOURNAMENTS LIST ──────────────────────────────────────────────────────────
-const TournamentsScreen = ({user,onSelect,onLogout}:{user:User;onSelect:(t:Tournament)=>void;onLogout:()=>void}) => {
+const TournamentsScreen = ({user,onSelect,onLogout,onSettings}:{user:User;onSelect:(t:Tournament)=>void;onLogout:()=>void;onSettings:()=>void}) => {
   const C = useTheme();
   const [list,setList]=useState<Tournament[]>([]);
   const [refreshing,setRefreshing]=useState(false);
@@ -783,7 +1214,9 @@ const TournamentsScreen = ({user,onSelect,onLogout}:{user:User;onSelect:(t:Tourn
           <Text style={{fontSize:22,fontWeight:'900',color:C.text}}>🏓 TT Platform</Text>
           <Text style={{color:C.text3,fontSize:12}}>Hi, {user.displayName}{lastSync?` · synced ${lastSync}`:''}</Text>
         </View>
-        <TouchableOpacity onPress={onLogout}><Text style={{color:'#EF4444',fontWeight:'700',fontSize:13}}>Logout</Text></TouchableOpacity>
+        <TouchableOpacity onPress={onSettings} style={{width:36,height:36,borderRadius:18,backgroundColor:'#007AFF22',alignItems:'center',justifyContent:'center'}}>
+          <Text style={{fontSize:18}}>👤</Text>
+        </TouchableOpacity>
       </View>
       <View style={{flexDirection:'row',gap:10,paddingHorizontal:16,paddingBottom:8}}>
         <TouchableOpacity style={[ss.btn,ss.btnGreen,{flex:1,paddingVertical:10}]} onPress={()=>{setName('');setPwd('');setModal('create');}}><Text style={ss.btnTxt}>+ Create</Text></TouchableOpacity>
@@ -923,6 +1356,8 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
   const [detailSync,setDetailSync]=useState<string|null>(null);
   const [isOffline,setIsOffline]=useState(false);
   const [mutating,setMutating]=useState(false); // true during score submit / admin actions
+  const [showChallenge,setShowChallenge]=useState(false);
+  const [challengeTargets,setChallengeTargets]=useState<number[]>([]); // selected member ids to challenge
 
   // Full load — fetches all data (members, rankings, history, current day)
   // Only called on initial load, tab switches, and after mutations
@@ -1105,11 +1540,16 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
     setH2hM1(m1);setH2hData(null);setH2hModal(true);
     try{setH2hData(await api(`/tournaments/${t.id}/head-to-head?member1Id=${m1.id}&member2Id=${m2.id}`));}catch{}
   };
-  const askAI=async()=>{
-    if(!aiQ.trim())return;setAiLoading(true);
+  const askAI=async(overrideQ?:string)=>{
+    const q=(overrideQ??aiQ).trim();
+    if(!q)return;
+    if(!overrideQ)setAiQ('');
+    setAiLoading(true);setAiA('');
     try{
-      const top=(detail?.rankings??[]).slice(0,5).map(r=>`${r.displayName}#${r.rank}(${r.totalMatchesWon}W/${r.totalMatchesPlayed})`).join(',')||'';
-      const ans=await callAI(`Tournament "${t.name}". Top: ${top}. Question: ${aiQ}. Answer in 2-3 sentences.`);
+      const top=(detail?.rankings??[]).slice(0,8).map(r=>`${r.displayName}:rank${r.rank}(${r.totalMatchesWon}W/${r.totalMatchesPlayed}M,${r.proficiency??'?'})`).join(', ')||'';
+      const dayInfo=day?.status==='IN_PROGRESS'?`Active day ${day.dayNumber} with ${day.presentMembers?.length??0} players.`:'No active session.';
+      const context=`Tournament "${t.name}" | ${members.length} members | ${dayInfo} | Rankings: ${top}`;
+      const ans=await callAI(`${context}\n\nQuestion: ${q}`);
       setAiA(ans);
     }catch(e:any){setAiA('AI unavailable. Try again.');}
     finally{setAiLoading(false);}
@@ -1176,23 +1616,31 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
     }catch{}
   };
 
-  const challengeMember=async(member:Member)=>{
+  // Opens multi-select challenge modal pre-selecting this one member
+  const challengeMember=(member:Member)=>{
     if(!member.playerId){Alert.alert('Cannot Challenge','Guest players cannot receive push notifications.');return;}
-    Alert.alert(
-      `⚔️ Challenge ${member.displayName}`,
-      `Send a match challenge notification to ${member.displayName}?`,
-      [{text:'Cancel',style:'cancel'},{text:'Send Challenge 🏓',onPress:async()=>{
-        setMutating(true);
-        try{
-          // Post as @mention chat — backend sends push notification to mentioned user
-          const msg=`@${member.displayName} ⚔️ ${user.displayName} challenges you to a match! Accept? 🏓`;
-          await api(`/tournaments/${t.id}/chat`,{method:'POST',body:JSON.stringify({content:msg})});
-          await loadChat(true);
-          Alert.alert('Challenge Sent! ⚔️',`${member.displayName} has been notified and will see your challenge in chat.`);
-        }catch(e:any){Alert.alert('Error',e.message);}
-        finally{setMutating(false);}
-      }}]
-    );
+    setChallengeTargets([member.id]);
+    setShowChallenge(true);
+  };
+
+  // Send challenges to all selected members (one chat message each)
+  const sendMultiChallenge=async()=>{
+    if(challengeTargets.length===0)return;
+    setMutating(true);
+    try{
+      for(const targetId of challengeTargets){
+        const target=members.find(m=>m.id===targetId);
+        if(!target||!target.playerId)continue;
+        const msg=`@${target.displayName} ⚔️ ${user.displayName} challenges you to a match! Accept? 🏓`;
+        await api(`/tournaments/${t.id}/chat`,{method:'POST',body:JSON.stringify({content:msg})});
+      }
+      setShowChallenge(false);
+      setChallengeTargets([]);
+      setTab('Chat');
+      await loadChat(true);
+      Alert.alert('Challenges Sent! ⚔️',`${challengeTargets.length} player${challengeTargets.length>1?'s':''} challenged. They will see it in chat.`);
+    }catch(e:any){Alert.alert('Error',e.message);}
+    finally{setMutating(false);}
   };
 
   const renderMsgText=(content:string,isMe:boolean)=>{
@@ -1206,6 +1654,62 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
         )}
       </Text>
     );
+  };
+
+  // Returns the challenger's displayName if this message is a challenge directed at the current user
+  const getChallengeTarget=(content:string):string|null=>{
+    // Pattern: "@TargetName ⚔️ ChallengerName challenges you to a match!"
+    if(!content.includes('⚔️')||!content.includes('challenges you to a match'))return null;
+    const match=content.match(/^@(\S.*?)\s+⚔️\s+(.+?)\s+challenges you/);
+    if(!match)return null;
+    const targetName=match[1];
+    // Only show buttons if *I* am the target
+    if(targetName.toLowerCase()!==user.displayName.toLowerCase())return null;
+    return match[2]; // challenger's name
+  };
+
+  // Check whether this challenge already has a reply (✅ or ❌) in the message list
+  const challengeAlreadyAnswered=(challengeMsg:ChatMsg):boolean=>{
+    const challenger=getChallengeTarget(challengeMsg.content);
+    if(!challenger)return false;
+    // Look for a reply posted after this message that contains ✅/❌ and the challenger's name
+    return msgs.some(m=>
+      m.id>challengeMsg.id&&
+      m.senderId===user.id&&
+      (m.content.includes('✅')||m.content.includes('❌'))&&
+      m.content.includes(challenger)
+    );
+  };
+
+  const acceptChallenge=async(challenger:string)=>{
+    try{
+      const reply=`✅ @${challenger} I accept your challenge! Let's play 🏓`;
+      await api(`/tournaments/${t.id}/chat`,{method:'POST',body:JSON.stringify({content:reply})});
+      // Look up both member IDs by display name / playerId
+      const myMember=members.find(m=>m.playerId===user.id);
+      const challengerMember=members.find(m=>m.displayName===challenger);
+      if(myMember&&challengerMember){
+        try{
+          await api(`/tournaments/${t.id}/days/challenge-match`,{
+            method:'POST',
+            body:JSON.stringify({member1Id:challengerMember.id,member2Id:myMember.id}),
+          });
+          await load(); // refresh to show the new match
+        }catch(matchErr:any){
+          // Match creation failed — still accepted the challenge in chat
+          console.warn('Challenge match create failed:',matchErr?.message);
+        }
+      }
+      await loadChat(true);
+    }catch(e:any){Alert.alert('Error',e.message);}
+  };
+
+  const declineChallenge=async(challenger:string)=>{
+    try{
+      const reply=`❌ @${challenger} I'll pass this time 🏓`;
+      await api(`/tournaments/${t.id}/chat`,{method:'POST',body:JSON.stringify({content:reply})});
+      await loadChat(true);
+    }catch(e:any){Alert.alert('Error',e.message);}
   };
 
   // Derived values needed in JSX — defined here to avoid "not defined" crashes
@@ -1289,6 +1793,19 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
           </View>}
 
           {!day&&<Text style={{color:C.text3,textAlign:'center',padding:20}}>{isAdmin?'Tap "Start Day Session" to begin.':'No active session.'}</Text>}
+          {/* Challenge button — visible to all members anytime */}
+          {members.filter(m=>m.playerId&&m.playerId!==user.id).length>0&&(
+            <TouchableOpacity
+              style={{backgroundColor:'#FEF3C7',borderRadius:12,padding:12,flexDirection:'row',alignItems:'center',gap:10,borderWidth:1,borderColor:'#F59E0B'}}
+              onPress={()=>{setChallengeTargets([]);setShowChallenge(true);}}>
+              <Text style={{fontSize:18}}>⚔️</Text>
+              <View style={{flex:1}}>
+                <Text style={{color:'#B45309',fontWeight:'800',fontSize:14}}>Challenge a Member</Text>
+                <Text style={{color:'#D97706',fontSize:11}}>Send match challenges — accepted challenges create a scheduled match</Text>
+              </View>
+              <Text style={{color:'#D97706',fontSize:18}}>›</Text>
+            </TouchableOpacity>
+          )}
           {day?.status==='ENDED'&&<View style={[ss.card,{backgroundColor:'#DCFCE7'}]}><Text style={{color:'#16A34A',fontWeight:'700',textAlign:'center'}}>✅ Day {day.dayNumber} completed!{day.mvpName?' 🏆 MVP: '+day.mvpName:''}</Text></View>}
 
           {day?.status==='IN_PROGRESS'&&<>
@@ -1359,10 +1876,15 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
           ListHeaderComponent={<View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
             <View><Text style={[ss.secLbl,{color:C.text3}]}>RANKED BY WINS/MATCHES</Text><Text style={{color:C.text3,fontSize:10}}>More wins per match = higher rank</Text></View>
             <View style={{flexDirection:'row',gap:6}}>
-<TouchableOpacity style={[ss.smBtn,{borderColor:'#22C55E'}]} onPress={()=>{
-  const top=(detail?.rankings??[]).slice(0,5).map((r,i)=>`${i===0?'🥇':i===1?'🥈':i===2?'🥉':'#'+r.rank} ${r.displayName} — ${r.totalMatchesWon}W/${r.totalMatchesPlayed}`).join('\n');
-  Share.share({title:`${t.name} Rankings`,message:`🏓 ${t.name} — Top Players\n\n${top}\n\nJoin on TT Platform!`}).catch(()=>{});
-}}><Text style={{color:'#22C55E',fontSize:11,fontWeight:'700'}}>📤 Share</Text></TouchableOpacity>
+              <TouchableOpacity style={[ss.smBtn,{borderColor:'#22C55E'}]} onPress={()=>{
+                const top=(detail?.rankings??[]).slice(0,5).map((r,i)=>`${i===0?'🥇':i===1?'🥈':i===2?'🥉':'#'+r.rank} ${r.displayName} — ${r.totalMatchesWon}W/${r.totalMatchesPlayed}`).join('
+');
+                Share.share({title:`${t.name} Rankings`,message:`🏓 ${t.name} — Top Players
+
+${top}
+
+Join on TT Platform!`});
+              }}><Text style={{color:'#22C55E',fontSize:11,fontWeight:'700'}}>📤 Share</Text></TouchableOpacity>
               {isAdmin&&<TouchableOpacity style={[ss.smBtn,{borderColor:'#007AFF'}]} onPress={()=>{const e:any={};(detail?.rankings??[]).forEach(r=>e[r.memberId]=String(r.rank));setRankEdits(e);setShowRankEditor(true);}}><Text style={{color:'#007AFF',fontSize:11,fontWeight:'700'}}>✏ Edit</Text></TouchableOpacity>}
             </View>
           </View>}
@@ -1451,13 +1973,38 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
                 <Text style={{color:fg[m.type]||C.text3,fontSize:12,fontWeight:'600',textAlign:'center'}}>{m.content}</Text>
                 <Text style={{color:C.text3,fontSize:9,textAlign:'center',marginTop:2}}>{fmtDateTime(m.sentAt)}</Text>
               </View></View>);
-            return(<View style={{flexDirection:me?'row-reverse':'row',gap:8,alignItems:'flex-end'}}>
-              {!me&&<View style={{width:26,height:26,borderRadius:13,backgroundColor:C.bg3,alignItems:'center',justifyContent:'center'}}><Text style={{color:'#007AFF',fontWeight:'800',fontSize:11}}>{(m.senderName??'?')[0]}</Text></View>}
-              <View style={{maxWidth:'75%',paddingHorizontal:12,paddingVertical:8,borderRadius:16,backgroundColor:me?'#007AFF':C.msgOther,borderWidth:me?0:1,borderColor:C.msgOtherBorder,borderBottomRightRadius:me?4:16,borderBottomLeftRadius:me?16:4}}>
-                {!me&&<Text style={{color:'#007AFF',fontWeight:'700',fontSize:11,marginBottom:2}}>{m.senderName}</Text>}
-                {renderMsgText(m.content,me)}
-                <Text style={{color:me?'rgba(255,255,255,0.6)':'#CBD5E1',fontSize:9,marginTop:3,alignSelf:'flex-end'}}>{fmtDateTime(m.sentAt)}</Text>
-              </View></View>);
+            // Challenge message directed at me — show Accept/Decline
+            const challenger=!me?getChallengeTarget(m.content):null;
+            const answered=challenger?challengeAlreadyAnswered(m):false;
+            return(
+              <View style={{flexDirection:me?'row-reverse':'row',gap:8,alignItems:'flex-end'}}>
+                {!me&&<View style={{width:26,height:26,borderRadius:13,backgroundColor:C.bg3,alignItems:'center',justifyContent:'center'}}><Text style={{color:'#007AFF',fontWeight:'800',fontSize:11}}>{(m.senderName??'?')[0]}</Text></View>}
+                <View style={{maxWidth:'75%'}}>
+                  <View style={{paddingHorizontal:12,paddingVertical:8,borderRadius:16,backgroundColor:challenger?'#FEF3C7':me?'#007AFF':C.msgOther,borderWidth:me?0:1,borderColor:challenger?'#F59E0B':C.msgOtherBorder,borderBottomRightRadius:me?4:16,borderBottomLeftRadius:me?16:4}}>
+                    {!me&&<Text style={{color:challenger?'#B45309':'#007AFF',fontWeight:'700',fontSize:11,marginBottom:2}}>{m.senderName}</Text>}
+                    {renderMsgText(m.content,me)}
+                    <Text style={{color:me?'rgba(255,255,255,0.6)':'#CBD5E1',fontSize:9,marginTop:3,alignSelf:'flex-end'}}>{fmtDateTime(m.sentAt)}</Text>
+                  </View>
+                  {!!challenger&&!answered&&(
+                    <View style={{flexDirection:'row',gap:8,marginTop:6,marginLeft:4}}>
+                      <TouchableOpacity
+                        style={{flex:1,backgroundColor:'#16A34A',borderRadius:10,paddingVertical:8,alignItems:'center'}}
+                        onPress={()=>acceptChallenge(challenger)}>
+                        <Text style={{color:'#fff',fontWeight:'700',fontSize:13}}>✅ Accept</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={{flex:1,backgroundColor:'#EF4444',borderRadius:10,paddingVertical:8,alignItems:'center'}}
+                        onPress={()=>declineChallenge(challenger)}>
+                        <Text style={{color:'#fff',fontWeight:'700',fontSize:13}}>❌ Decline</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                  {!!challenger&&answered&&(
+                    <Text style={{color:C.text3,fontSize:11,marginTop:4,marginLeft:4}}>Challenge answered ✓</Text>
+                  )}
+                </View>
+              </View>
+            );
           }}
           ListEmptyComponent={<Text style={{color:C.text3,textAlign:'center',padding:30}}>No messages yet</Text>}
         />
@@ -1572,7 +2119,7 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
                   ['BALANCED_TEAMS','⚖ Balanced Teams'],
                   ['TEAM_2V2','🏓 2v2 Doubles'],
                   ['CUSTOM_TEAMS','🎨 Custom Teams'],
-                ].map(([v,l])=>(
+                ].map(([v,l]:[string,string])=>(
                   <TouchableOpacity key={v} style={[ss.fmtBtn,{backgroundColor:C.fmtBtn,borderColor:C.fmtBtnBorder},fmt===v&&ss.fmtBtnOn]} onPress={()=>setFmt(v)}>
                     <Text style={{color:fmt===v?'#007AFF':C.text2,fontWeight:'700',fontSize:12}}>{l}</Text>
                   </TouchableOpacity>
@@ -1622,8 +2169,8 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
             </View>}
           </ScrollView>
           <View style={{flexDirection:'row',gap:8,marginTop:14}}>
-            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={()=>setShowStart(false)}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
-            <TouchableOpacity style={[ss.btn,ss.btnGreen,{flex:1}]} onPress={startDay}><Text style={ss.btnTxt}>▶ Start</Text></TouchableOpacity>
+            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={()=>setShowStart(false)} disabled={mutating}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
+            <TouchableOpacity style={[ss.btn,ss.btnGreen,{flex:1},mutating&&ss.btnOff]} onPress={startDay} disabled={mutating}>{mutating?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>▶ Start</Text>}</TouchableOpacity>
           </View>
         </View></View>
       </Modal>
@@ -1769,17 +2316,102 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
         </View></View>
       </Modal>
 
+      {/* Challenge Modal */}
+      <Modal visible={showChallenge} transparent animationType="slide" onRequestClose={()=>setShowChallenge(false)}>
+        <View style={ss.overlay}><View style={[ss.modal,{maxHeight:'85%',backgroundColor:C.modal}]}>
+          <Text style={[ss.modalTitle,{color:C.text}]}>⚔️ Challenge Members</Text>
+          <Text style={{color:C.text3,fontSize:12,marginBottom:12}}>Select one or more players to challenge. Each will get a push notification and see it in chat.</Text>
+          <ScrollView style={{maxHeight:320}} showsVerticalScrollIndicator={false}>
+            {members.filter(m=>m.playerId&&m.playerId!==user.id).map(m=>{
+              const on=challengeTargets.includes(m.id);
+              return(
+                <TouchableOpacity key={m.id}
+                  style={{flexDirection:'row',alignItems:'center',gap:10,paddingVertical:10,borderBottomWidth:1,borderBottomColor:C.cardBorder,backgroundColor:on?'#FEF3C7':'transparent',borderRadius:8,paddingHorizontal:6}}
+                  onPress={()=>setChallengeTargets(p=>on?p.filter(x=>x!==m.id):[...p,m.id])}>
+                  <View style={{width:28,height:28,borderRadius:14,backgroundColor:on?'#F59E0B':'#F1F5F9',alignItems:'center',justifyContent:'center'}}>
+                    <Text style={{color:on?'#fff':'#94A3B8',fontWeight:'800',fontSize:13}}>{on?'✓':m.displayName[0].toUpperCase()}</Text>
+                  </View>
+                  <View style={{flex:1}}>
+                    <Text style={{color:on?'#B45309':C.text,fontWeight:on?'700':'500',fontSize:14}}>{m.displayName}</Text>
+                    {m.currentRank>0&&<Text style={{color:C.text3,fontSize:11}}>Rank #{m.currentRank} · {m.totalMatchesWon}W/{m.totalMatchesPlayed}</Text>}
+                  </View>
+                  <ProfBadge p={m.proficiency}/>
+                </TouchableOpacity>
+              );
+            })}
+            {members.filter(m=>m.playerId&&m.playerId!==user.id).length===0&&(
+              <Text style={{color:C.text3,textAlign:'center',padding:20}}>No challengeable members</Text>
+            )}
+          </ScrollView>
+          {challengeTargets.length>0&&(
+            <View style={{backgroundColor:'#FEF9C3',borderRadius:8,padding:8,marginTop:8,marginBottom:4}}>
+              <Text style={{color:'#B45309',fontSize:12,fontWeight:'600',textAlign:'center'}}>
+                Challenging {challengeTargets.length} player{challengeTargets.length>1?'s':''}: {challengeTargets.map(id=>members.find(m=>m.id===id)?.displayName).join(', ')}
+              </Text>
+            </View>
+          )}
+          <View style={{flexDirection:'row',gap:8,marginTop:12}}>
+            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={()=>setShowChallenge(false)}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
+            <TouchableOpacity
+              style={[ss.btn,{flex:1,backgroundColor:'#F59E0B'},(challengeTargets.length===0||mutating)&&ss.btnOff]}
+              onPress={sendMultiChallenge}
+              disabled={challengeTargets.length===0||mutating}>
+              {mutating?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>⚔️ Send {challengeTargets.length>0?`(${challengeTargets.length})`:''}</Text>}
+            </TouchableOpacity>
+          </View>
+        </View></View>
+      </Modal>
+
       {/* AI Chat */}
       <Modal visible={aiModal} transparent animationType="slide" onRequestClose={()=>setAiModal(false)}>
-        <View style={ss.overlay}><View style={ss.modal}>
-          <Text style={[ss.modalTitle,{color:C.text}]}>🤖 AI Assistant</Text>
-          <Text style={{color:C.text3,fontSize:12,marginBottom:10}}>Ask about team splits, coaching tips, player analysis</Text>
-          <TextInput style={[ss.inp,{height:80,textAlignVertical:'top',backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="e.g. Who should pair for teams?" placeholderTextColor={C.text3} value={aiQ} onChangeText={setAiQ} multiline/>
-          <TouchableOpacity style={[ss.btn,{backgroundColor:'#7C3AED',marginBottom:8},(!aiQ.trim()||aiLoading)&&ss.btnOff]} onPress={askAI} disabled={!aiQ.trim()||aiLoading}>
-            {aiLoading?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>Ask AI</Text>}
+        <View style={ss.overlay}><View style={[ss.modal,{maxHeight:'90%',backgroundColor:C.modal}]}>
+          <Text style={[ss.modalTitle,{color:C.text}]}>🤖 AI Coach</Text>
+          <ScrollView showsVerticalScrollIndicator={false}>
+            {/* Quick action chips */}
+            <Text style={{color:C.text3,fontSize:11,fontWeight:'700',marginBottom:6}}>QUICK ACTIONS</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:12}}>
+              <View style={{flexDirection:'row',gap:8}}>
+                {[
+                  ['⚖️ Balance Teams','Split the present players into 2 balanced teams based on their rank and skill level. List each team.'],
+                  ['🔮 Predict Winner','Who is most likely to win today\'s session based on current rankings and recent form?'],
+                  ['📈 Who\'s Improving','Which player has shown the most improvement recently based on their stats?'],
+                  ['⚠️ Who to Watch','Which matchup today will be the most competitive or surprising?'],
+                  ['🧠 Tactics Tip','Give tactical advice for the top 3 ranked players on how to beat each other.'],
+                  ['📋 Session Plan','Suggest a warm-up and mental preparation plan for today\'s session.'],
+                ].map(([label,prompt])=>(
+                  <TouchableOpacity key={label}
+                    style={{backgroundColor:C.fmtBtn,borderWidth:1,borderColor:C.fmtBtnBorder,borderRadius:20,paddingHorizontal:14,paddingVertical:8}}
+                    onPress={()=>askAI(prompt as string)}
+                    disabled={aiLoading}>
+                    <Text style={{color:C.text2,fontWeight:'600',fontSize:12}}>{label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </ScrollView>
+            <Text style={{color:C.text3,fontSize:11,fontWeight:'700',marginBottom:6}}>ASK ANYTHING</Text>
+            <TextInput
+              style={[ss.inp,{height:72,textAlignVertical:'top',backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]}
+              placeholder="e.g. Who should I pick for doubles? How can I beat rank #1?"
+              placeholderTextColor={C.text3}
+              value={aiQ}
+              onChangeText={setAiQ}
+              multiline/>
+            <TouchableOpacity
+              style={[ss.btn,{backgroundColor:'#7C3AED',marginTop:8,marginBottom:4},(!aiQ.trim()||aiLoading)&&ss.btnOff]}
+              onPress={()=>askAI()}
+              disabled={!aiQ.trim()||aiLoading}>
+              {aiLoading?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>🤖 Ask AI</Text>}
+            </TouchableOpacity>
+            {aiLoading&&<Text style={{color:C.text3,fontSize:11,textAlign:'center',marginBottom:8}}>Thinking...</Text>}
+            {!!aiA&&(
+              <View style={{backgroundColor:'#FAF5FF',borderRadius:12,padding:14,borderWidth:1,borderColor:'#DDD6FE',marginTop:4}}>
+                <Text style={{color:'#6D28D9',fontSize:13,lineHeight:20}}>{aiA}</Text>
+              </View>
+            )}
+          </ScrollView>
+          <TouchableOpacity style={[ss.btn,{backgroundColor:C.btnGray,marginTop:10}]} onPress={()=>setAiModal(false)}>
+            <Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Close</Text>
           </TouchableOpacity>
-          {!!aiA&&<View style={[ss.aiBox,{backgroundColor:C.bg3,borderColor:C.inpBorder}]}><Text style={[ss.aiTxt,{color:C.text}]}>{aiA}</Text></View>}
-          <TouchableOpacity style={[ss.btn,{backgroundColor:C.btnGray,marginTop:8}]} onPress={()=>setAiModal(false)}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Close</Text></TouchableOpacity>
         </View></View>
       </Modal>
 
@@ -1827,6 +2459,7 @@ export default function App() {
   const [user,setUser]=useState<User|null>(null);
   const [selected,setSelected]=useState<Tournament|null>(null);
   const [booting,setBooting]=useState(true);
+  const [showSettings,setShowSettings]=useState(false);
 
   useEffect(()=>{
     const boot = async () => {
@@ -1933,9 +2566,13 @@ export default function App() {
       <Text style={{color:C.text3,fontSize:10,marginTop:6,textAlign:'center',paddingHorizontal:40}}>First load may take 20-30s</Text>
     </View>
   );
+  const updateUser=(u:User)=>{ setUser(u); AsyncStorage.setItem('user',JSON.stringify(u)); };
   if(!user) return <AuthScreen onLogin={login}/>;
   if(selected) return <DetailScreen t={selected} user={user} onBack={()=>setSelected(null)} onLogout={logout}/>;
-  return <TournamentsScreen user={user} onSelect={setSelected} onLogout={logout}/>;
+  return <>
+    <TournamentsScreen user={user} onSelect={setSelected} onLogout={logout} onSettings={()=>setShowSettings(true)}/>
+    {showSettings&&<UserSettingsModal user={user} onClose={()=>setShowSettings(false)} onUpdate={updateUser} onLogout={logout}/>}
+  </>;
 }
 
 // ── STYLES ────────────────────────────────────────────────────────────────────
