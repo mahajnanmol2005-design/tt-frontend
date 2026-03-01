@@ -2,7 +2,7 @@ import React, {useState, useEffect, useCallback, useRef} from 'react';
 import {
   SafeAreaView, ScrollView, View, Text, TextInput, TouchableOpacity,
   StyleSheet, Alert, FlatList, Modal, ActivityIndicator, RefreshControl, Platform,
-  PermissionsAndroid, useColorScheme, Keyboard, Animated, Linking, Share,
+  PermissionsAndroid, useColorScheme, Keyboard, Animated, Share,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import messaging from '@react-native-firebase/messaging';
@@ -30,14 +30,21 @@ const api = async (path: string, options: any = {}) => {
     });
     clearTimeout(timeoutId);
     const text = await res.text();
-    const data = text ? JSON.parse(text) : {};
+    let data: any = {};
+    try { data = text ? JSON.parse(text) : {}; } catch { data = { message: text || 'Server error' }; }
     if (res.status === 401) {
       // Token expired — clear storage and force re-login
       await AsyncStorage.multiRemove(['token','user']);
       if (_onAuthFail) _onAuthFail();
       throw new Error('Session expired. Please log in again.');
     }
-    if (!res.ok) throw new Error(data.message || 'Request failed');
+    // 500 with "Player not found" = DB was wiped, token references deleted user → force logout
+    if (res.status === 500 && data.message?.includes('Player not found')) {
+      await AsyncStorage.multiRemove(['token','user']);
+      if (_onAuthFail) _onAuthFail();
+      throw new Error('Session expired. Please log in again.');
+    }
+    if (!res.ok) throw new Error(data.message || `Request failed (${res.status})`);
     return data;
   } catch (e: any) {
     clearTimeout(timeoutId);
@@ -411,6 +418,129 @@ const MembersSkeleton = () => {
   );
 };
 
+
+// ── SOCIAL AUTH CONFIG ────────────────────────────────────────────────────────
+const SOCIAL_PROVIDERS = [
+  { key:'google',  label:'Google',   bg:'#fff',     border:'#E2E8F0', textColor:'#1E293B', logoBg:'#4285F4', logoTxt:'G',  logoColor:'#fff' },
+  { key:'github',  label:'GitHub',   bg:'#24292E',  border:'#24292E', textColor:'#fff',    logoBg:'#fff',    logoTxt:'⌥',  logoColor:'#24292E' },
+  { key:'linkedin',label:'LinkedIn', bg:'#0A66C2',  border:'#0A66C2', textColor:'#fff',    logoBg:'#fff',    logoTxt:'in', logoColor:'#0A66C2' },
+] as const;
+
+// ── FORGOT PASSWORD MODAL ─────────────────────────────────────────────────────
+const ForgotPasswordModal = ({visible,onClose,onSuccess}:{visible:boolean;onClose:()=>void;onSuccess:(email:string)=>void}) => {
+  const C = useTheme();
+  const [email,setEmail]=useState('');
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState('');
+
+  const send = async () => {
+    if(!email.trim()) return setError('Enter your email');
+    setError(''); setLoading(true);
+    try {
+      await fetch(`${API_URL}/auth/forgot-password`,{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({email:email.trim().toLowerCase()}),
+      });
+      onSuccess(email.trim().toLowerCase());
+    } catch(e:any) { setError('Network error. Try again.'); }
+    setLoading(false);
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={ss.overlay}><View style={[ss.modal,{backgroundColor:C.modal}]}>
+        <Text style={[ss.modalTitle,{color:C.text}]}>Forgot Password</Text>
+        <Text style={{color:C.text3,fontSize:13,marginBottom:14,lineHeight:19}}>Enter your email and we'll send a 6-digit OTP to reset your password.</Text>
+        {!!error&&<Text style={{color:'#EF4444',fontSize:12,marginBottom:10}}>{error}</Text>}
+        <Text style={[ss.lbl,{color:C.text3}]}>EMAIL</Text>
+        <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="your@email.com" placeholderTextColor={C.text3} value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" autoFocus/>
+        <View style={{flexDirection:'row',gap:8,marginTop:8}}>
+          <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={onClose}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
+          <TouchableOpacity style={[ss.btn,ss.btnBlue,{flex:1},loading&&ss.btnOff]} onPress={send} disabled={loading}>
+            {loading?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>Send OTP</Text>}
+          </TouchableOpacity>
+        </View>
+      </View></View>
+    </Modal>
+  );
+};
+
+// ── OTP VERIFY + NEW PASSWORD MODAL ──────────────────────────────────────────
+const ResetPasswordModal = ({visible,email,onClose,onDone}:{visible:boolean;email:string;onClose:()=>void;onDone:(user:User)=>void}) => {
+  const C = useTheme();
+  const [otp,setOtp]=useState('');
+  const [newPwd,setNewPwd]=useState('');
+  const [confirmPwd,setConfirmPwd]=useState('');
+  const [step,setStep]=useState<'otp'|'newpwd'>('otp');
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState('');
+
+  const verifyOtp = async () => {
+    if(otp.length!==6) return setError('Enter the 6-digit OTP');
+    setError(''); setLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/auth/verify-otp`,{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({email,otp}),
+      });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.message||'Invalid OTP');
+      setStep('newpwd');
+    } catch(e:any) { setError(e.message); }
+    setLoading(false);
+  };
+
+  const resetPassword = async () => {
+    if(newPwd.length<6) return setError('Password must be at least 6 characters');
+    if(newPwd!==confirmPwd) return setError('Passwords do not match');
+    setError(''); setLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/auth/reset-password`,{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({email,otp,newPassword:newPwd}),
+      });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.message||'Reset failed');
+      await AsyncStorage.setItem('token',data.token);
+      onDone({id:data.userId,username:data.username,email:data.email,displayName:data.displayName||data.username,proficiency:data.proficiency});
+    } catch(e:any) { setError(e.message); }
+    setLoading(false);
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={ss.overlay}><View style={[ss.modal,{backgroundColor:C.modal}]}>
+        {step==='otp'?<>
+          <Text style={[ss.modalTitle,{color:C.text}]}>Enter OTP</Text>
+          <Text style={{color:C.text3,fontSize:13,marginBottom:14}}>A 6-digit code was sent to{'\n'}<Text style={{color:C.text,fontWeight:'700'}}>{email}</Text></Text>
+          {!!error&&<Text style={{color:'#EF4444',fontSize:12,marginBottom:10}}>{error}</Text>}
+          <Text style={[ss.lbl,{color:C.text3}]}>OTP CODE</Text>
+          <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text,fontSize:22,letterSpacing:8,textAlign:'center',fontWeight:'800'}]}
+            placeholder="------" placeholderTextColor={C.text3} value={otp} onChangeText={t=>setOtp(t.replace(/\D/g,'').slice(0,6))}
+            keyboardType="number-pad" maxLength={6} autoFocus/>
+          <View style={{flexDirection:'row',gap:8,marginTop:8}}>
+            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={onClose}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Back</Text></TouchableOpacity>
+            <TouchableOpacity style={[ss.btn,ss.btnBlue,{flex:1},loading&&ss.btnOff]} onPress={verifyOtp} disabled={loading}>
+              {loading?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>Verify</Text>}
+            </TouchableOpacity>
+          </View>
+        </>:<>
+          <Text style={[ss.modalTitle,{color:C.text}]}>New Password</Text>
+          <Text style={{color:C.text3,fontSize:13,marginBottom:14}}>OTP verified ✅ Set your new password.</Text>
+          {!!error&&<Text style={{color:'#EF4444',fontSize:12,marginBottom:10}}>{error}</Text>}
+          <Text style={[ss.lbl,{color:C.text3}]}>NEW PASSWORD</Text>
+          <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="Min 6 characters" placeholderTextColor={C.text3} value={newPwd} onChangeText={setNewPwd} secureTextEntry autoFocus/>
+          <Text style={[ss.lbl,{color:C.text3}]}>CONFIRM PASSWORD</Text>
+          <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="Re-enter password" placeholderTextColor={C.text3} value={confirmPwd} onChangeText={setConfirmPwd} secureTextEntry/>
+          <TouchableOpacity style={[ss.btn,ss.btnBlue,loading&&ss.btnOff,{marginTop:8}]} onPress={resetPassword} disabled={loading}>
+            {loading?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>Reset Password & Login</Text>}
+          </TouchableOpacity>
+        </>}
+      </View></View>
+    </Modal>
+  );
+};
+
 // ── AUTH ──────────────────────────────────────────────────────────────────────
 const AuthScreen = ({onLogin}:{onLogin:(u:User)=>void}) => {
   const C = useTheme();
@@ -420,7 +550,51 @@ const AuthScreen = ({onLogin}:{onLogin:(u:User)=>void}) => {
   const [password,setPassword]=useState('');
   const [proficiency,setProficiency]=useState('Intermediate');
   const [loading,setLoading]=useState(false);
+  const [socialLoading,setSocialLoading]=useState<string|null>(null);
   const [error,setError]=useState('');
+  const [showForgot,setShowForgot]=useState(false);
+  const [forgotEmail,setForgotEmail]=useState('');
+  const [showReset,setShowReset]=useState(false);
+  const {Linking} = require('react-native');
+
+  // Handle deep-link callback from OAuth
+  useEffect(()=>{
+    const handleUrl=(event:{url:string})=>{
+      const url=event.url;
+      if(!url.startsWith('ttplatform://auth'))return;
+      try{
+        const params:any={};
+        const query=url.split('?')[1]??'';
+        query.split('&').forEach(p=>{const [k,v]=p.split('=');if(k)params[k]=decodeURIComponent(v??'');});
+        if(params.token&&params.userId){
+          AsyncStorage.setItem('token',params.token).then(()=>{
+            onLogin({id:parseInt(params.userId),username:params.username??'',email:params.email??'',displayName:params.displayName??'Player',proficiency:params.proficiency??'Intermediate'});
+          });
+        } else if(params.error){
+          setError(decodeURIComponent(params.error));
+        }
+      }catch(e){setError('Social login failed. Please try again.');}
+      setSocialLoading(null);
+    };
+    const sub=Linking.addEventListener('url',handleUrl);
+    Linking.getInitialURL().then((url:string|null)=>{if(url)handleUrl({url});}).catch(()=>{});
+    return()=>sub.remove();
+  },[]);
+
+  const openSocialAuth=async(provider:typeof SOCIAL_PROVIDERS[number])=>{
+    setError('');
+    setSocialLoading(provider.key);
+    try{
+      // Add timestamp to bust any cached OAuth session on the backend
+      const ts = Date.now();
+      const url=`${API_URL.replace('/api','')}/oauth2/authorization/${provider.key}?ts=${ts}`;
+      await Linking.openURL(url);
+      setTimeout(()=>setSocialLoading(prev=>prev===provider.key?null:prev),60000);
+    }catch(e:any){
+      setError(`Could not open ${provider.label} login.`);
+      setSocialLoading(null);
+    }
+  };
 
   const submit = async () => {
     setError('');
@@ -456,21 +630,56 @@ const AuthScreen = ({onLogin}:{onLogin:(u:User)=>void}) => {
 
   return (
     <SafeAreaView style={[ss.screen,{backgroundColor:C.bg}]}>
-      <ScrollView contentContainerStyle={ss.authWrap}>
+      <ScrollView contentContainerStyle={ss.authWrap} keyboardShouldPersistTaps="handled">
         <Text style={{fontSize:70,textAlign:'center'}}>🏓</Text>
         <Text style={{fontSize:28,fontWeight:'900',color:C.text,textAlign:'center',marginTop:6}}>TT PLATFORM</Text>
+
         {!!error&&<View style={{backgroundColor:'#FEE2E2',borderRadius:10,padding:12,marginBottom:12}}>
           <Text style={{color:'#EF4444',fontSize:12,lineHeight:18}}>{error}</Text>
         </View>}
+
+        {/* Social login buttons */}
+        <View style={{gap:10,marginBottom:4}}>
+          {SOCIAL_PROVIDERS.map(p=>(
+            <TouchableOpacity key={p.key} onPress={()=>openSocialAuth(p)}
+              disabled={!!socialLoading||loading}
+              style={{flexDirection:'row',alignItems:'center',justifyContent:'center',gap:10,
+                paddingVertical:14,borderRadius:12,backgroundColor:p.bg,borderWidth:1,borderColor:p.border,
+                opacity:(socialLoading&&socialLoading!==p.key)||loading?0.5:1}}>
+              {socialLoading===p.key
+                ?<ActivityIndicator color={p.textColor} size="small"/>
+                :<>
+                  <View style={{width:24,height:24,borderRadius:4,backgroundColor:p.logoBg,alignItems:'center',justifyContent:'center'}}>
+                    <Text style={{color:p.logoColor,fontWeight:'900',fontSize:p.logoTxt.length>1?10:14}}>{p.logoTxt}</Text>
+                  </View>
+                  <Text style={{color:p.textColor,fontWeight:'700',fontSize:15}}>Continue with {p.label}</Text>
+                </>
+              }
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {/* Divider */}
+        <View style={{flexDirection:'row',alignItems:'center',gap:10,marginVertical:12}}>
+          <View style={{flex:1,height:1,backgroundColor:C.cardBorder}}/>
+          <Text style={{color:C.text3,fontSize:12,fontWeight:'600'}}>or</Text>
+          <View style={{flex:1,height:1,backgroundColor:C.cardBorder}}/>
+        </View>
+
         <View style={[ss.card,{backgroundColor:C.card}]}>
-          <Text style={{fontSize:20,fontWeight:'800',color:C.text,marginBottom:14,textAlign:'center'}}>{isLogin?'Sign In':'Create Account'}</Text>
+          <Text style={{fontSize:20,fontWeight:'800',color:C.text,marginBottom:14,textAlign:'center'}}>{isLogin?'Sign In with Email':'Create Account'}</Text>
           {!isLogin&&<><Text style={[ss.lbl,{color:C.text3}]}>USERNAME</Text><TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="username" placeholderTextColor={C.text3} value={username} onChangeText={setUsername} autoCapitalize="none"/></>}
           <Text style={[ss.lbl,{color:C.text3}]}>EMAIL</Text>
           <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="your@email.com" placeholderTextColor={C.text3} value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none"/>
           <Text style={[ss.lbl,{color:C.text3}]}>PASSWORD</Text>
           <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="Password" placeholderTextColor={C.text3} value={password} onChangeText={setPassword} secureTextEntry/>
           {!isLogin&&<><Text style={[ss.lbl,{color:C.text3}]}>SKILL LEVEL</Text><ProfPicker value={proficiency} onChange={setProficiency}/></>}
-          <TouchableOpacity style={[ss.btn,ss.btnBlue,loading&&ss.btnOff]} onPress={submit} disabled={loading}>
+
+          {isLogin&&<TouchableOpacity onPress={()=>setShowForgot(true)} style={{alignSelf:'flex-end',marginBottom:10,marginTop:-4}}>
+            <Text style={{color:'#007AFF',fontSize:13,fontWeight:'600'}}>Forgot password?</Text>
+          </TouchableOpacity>}
+
+          <TouchableOpacity style={[ss.btn,ss.btnBlue,(loading||!!socialLoading)&&ss.btnOff]} onPress={submit} disabled={loading||!!socialLoading}>
             {loading?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>{isLogin?'Login':'Register'}</Text>}
           </TouchableOpacity>
           {loading&&<AuthProgress/>}
@@ -479,6 +688,18 @@ const AuthScreen = ({onLogin}:{onLogin:(u:User)=>void}) => {
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      <ForgotPasswordModal
+        visible={showForgot}
+        onClose={()=>setShowForgot(false)}
+        onSuccess={(em)=>{setForgotEmail(em);setShowForgot(false);setShowReset(true);}}
+      />
+      <ResetPasswordModal
+        visible={showReset}
+        email={forgotEmail}
+        onClose={()=>setShowReset(false)}
+        onDone={(u)=>{setShowReset(false);onLogin(u);}}
+      />
     </SafeAreaView>
   );
 };
@@ -1432,6 +1653,7 @@ const TournamentsScreen = ({user,onSelect,onLogout,onSettings}:{user:User;onSele
     if(!name.trim())return Alert.alert('Error','Enter tournament name');
     try{
       const r=await api('/tournaments',{method:'POST',body:JSON.stringify({name:name.trim(),password:pwd??''})});
+      setModal(null);setName('');setPwd('');
       onSelect({id:r.id,name:r.name,memberCount:r.memberCount??1,daysPlayed:0,isAdmin:r.isAdmin??true,lastDayStatus:'NO_DAYS',lastDayNumber:0});
     }catch(e:any){Alert.alert('Error',e.message);}
   };
@@ -1439,7 +1661,17 @@ const TournamentsScreen = ({user,onSelect,onLogout,onSettings}:{user:User;onSele
     if(!name.trim())return Alert.alert('Error','Enter tournament name');
     try{
       const r=await api('/tournaments/join',{method:'POST',body:JSON.stringify({tournamentName:name.trim(),password:pwd??''})});
-      onSelect({id:r.id,name:r.name,memberCount:r.memberCount??1,daysPlayed:0,isAdmin:r.isAdmin??false,lastDayStatus:'NO_DAYS',lastDayNumber:0});
+      setModal(null);setName('');setPwd('');
+      // r is a TournamentDetailResponse — build a proper Tournament summary from it
+      onSelect({
+        id:r.id,
+        name:r.name,
+        memberCount:r.memberCount??r.members?.length??1,
+        daysPlayed:r.days?.filter((d:any)=>d.status==='ENDED')?.length??0,
+        isAdmin:r.isAdmin??false,
+        lastDayStatus:r.currentDay?.status??'NO_DAYS',
+        lastDayNumber:r.currentDay?.dayNumber??0,
+      });
     }catch(e:any){Alert.alert('Error',e.message);}
   };
 
@@ -1523,8 +1755,11 @@ const TournamentsScreen = ({user,onSelect,onLogout,onSettings}:{user:User;onSele
           <Text style={[ss.modalTitle,{color:C.text}]}>{modal==='create'?'Create Tournament':'Join Tournament'}</Text>
           <Text style={[ss.lbl,{color:C.text3}]}>NAME</Text>
           <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="e.g. Office TT League" placeholderTextColor={C.text3} value={name} onChangeText={setName}/>
-          <Text style={[ss.lbl,{color:C.text3}]}>PASSWORD (optional)</Text>
+          <Text style={[ss.lbl,{color:C.text3}]}>PASSWORD {modal==='join'?'(if required)':'(optional)'}</Text>
           <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="Leave blank for open" placeholderTextColor={C.text3} value={pwd} onChangeText={setPwd} secureTextEntry/>
+          {modal==='join'&&<TouchableOpacity onPress={()=>{setModal(null);Alert.alert('Forgot Tournament Password?','Ask the tournament admin to reset it.\n\nAdmins can reset the password from the tournament long-press menu → Change Password.');}} style={{alignSelf:'flex-end',marginBottom:8,marginTop:-4}}>
+            <Text style={{color:'#007AFF',fontSize:12,fontWeight:'600'}}>Forgot password?</Text>
+          </TouchableOpacity>}
           <View style={{flexDirection:'row',gap:8,marginTop:8}}>
             <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={()=>setModal(null)}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
             <TouchableOpacity style={[ss.btn,modal==='create'?ss.btnGreen:ss.btnBlue,{flex:1}]} onPress={modal==='create'?create:join}><Text style={ss.btnTxt}>{modal==='create'?'Create':'Join'}</Text></TouchableOpacity>
@@ -1539,6 +1774,19 @@ const TournamentsScreen = ({user,onSelect,onLogout,onSettings}:{user:User;onSele
             <Text style={{fontSize:16,fontWeight:'800',color:C.text,padding:18,borderBottomWidth:1,borderBottomColor:C.cardBorder}}>{menuT?.name}</Text>
             <TouchableOpacity style={{padding:18,borderBottomWidth:1,borderBottomColor:C.cardBorder}} onPress={()=>{setNewName(menuT?.name??'');setRenameModal(true);}}>
               <Text style={{color:'#007AFF',fontSize:15,fontWeight:'600'}}>✏️  Rename Tournament</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={{padding:18,borderBottomWidth:1,borderBottomColor:C.cardBorder}} onPress={()=>{
+              Alert.prompt('Change Tournament Password','Enter new password (leave blank to remove):',
+                async(newPwd)=>{
+                  if(newPwd===undefined)return;
+                  try{
+                    await api(`/tournaments/${menuT?.id}/password`,{method:'PUT',body:JSON.stringify({password:newPwd})});
+                    Alert.alert('✅ Done','Tournament password updated.');
+                    setMenuT(null);
+                  }catch(e:any){Alert.alert('Error',e.message);}
+                },'plain-text');
+            }}>
+              <Text style={{color:'#F59E0B',fontSize:15,fontWeight:'600'}}>🔐  Change Password</Text>
             </TouchableOpacity>
             <TouchableOpacity style={{padding:18}} onPress={doDelete}>
               <Text style={{color:'#EF4444',fontSize:15,fontWeight:'600'}}>🗑️  Delete Tournament</Text>
@@ -2234,15 +2482,13 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
           ListHeaderComponent={<View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
             <View><Text style={[ss.secLbl,{color:C.text3}]}>RANKED BY WINS/MATCHES</Text><Text style={{color:C.text3,fontSize:10}}>More wins per match = higher rank</Text></View>
             <View style={{flexDirection:'row',gap:6}}>
-              <TouchableOpacity style={[ss.smBtn,{borderColor:'#22C55E'}]} onPress={()=>{
-                const top=(detail?.rankings??[]).slice(0,5).map((r,i)=>`${i===0?'🥇':i===1?'🥈':i===2?'🥉':'#'+r.rank} ${r.displayName} — ${r.totalMatchesWon}W/${r.totalMatchesPlayed}`).join('
-');
-                Share.share({title:`${t.name} Rankings`,message:`🏓 ${t.name} — Top Players
-
-${top}
-
-Join on TT Platform!`});
-              }}><Text style={{color:'#22C55E',fontSize:11,fontWeight:'700'}}>📤 Share</Text></TouchableOpacity>
+<TouchableOpacity style={[ss.smBtn,{borderColor:'#22C55E'}]} onPress={()=>{
+    const top=(detail?.rankings??[]).slice(0,5).map((r,i)=>`${i===0?'🥇':i===1?'🥈':i===2?'🥉':'#'+r.rank} ${r.displayName} — ${r.totalMatchesWon}W/${r.totalMatchesPlayed}`).join('\n');
+    Share.share({
+      title: `${t.name} Rankings`,
+      message: `🏓 ${t.name} — Top Players\n\n${top}\n\nJoin on TT Platform!`
+    });
+  }}><Text style={{color:'#22C55E',fontSize:11,fontWeight:'700'}}>📤 Share</Text></TouchableOpacity>
               {isAdmin&&<TouchableOpacity style={[ss.smBtn,{borderColor:'#007AFF'}]} onPress={()=>{const e:any={};(detail?.rankings??[]).forEach(r=>e[r.memberId]=String(r.rank));setRankEdits(e);setShowRankEditor(true);}}><Text style={{color:'#007AFF',fontSize:11,fontWeight:'700'}}>✏ Edit</Text></TouchableOpacity>}
             </View>
           </View>}
@@ -2346,10 +2592,10 @@ Join on TT Platform!`});
                   <TouchableOpacity
                     activeOpacity={0.85}
                     onLongPress={()=>setReactionMsgId(reactionMsgId===m.id?null:m.id)}
-                    style={{paddingHorizontal:12,paddingVertical:8,borderRadius:16,backgroundColor:challenger?'#FEF3C7':me?'#007AFF':C.msgOther,borderWidth:me?0:1,borderColor:challenger?'#F59E0B':C.msgOtherBorder,borderBottomRightRadius:me?4:16,borderBottomLeftRadius:me?16:4}}>
-                    {!me&&<Text style={{color:challenger?'#B45309':'#007AFF',fontWeight:'700',fontSize:11,marginBottom:2}}>{m.senderName}</Text>}
-                    {renderMsgText(m.content,me)}
-                    <Text style={{color:me?'rgba(255,255,255,0.6)':'#CBD5E1',fontSize:9,marginTop:3,alignSelf:'flex-end'}}>{fmtDateTime(m.sentAt)}</Text>
+                    style={{paddingHorizontal:12,paddingVertical:8,borderRadius:16,backgroundColor:challenger?'#4338CA':me?'#007AFF':C.msgOther,borderWidth:me?0:1,borderColor:challenger?'#6366F1':C.msgOtherBorder,borderBottomRightRadius:me?4:16,borderBottomLeftRadius:me?16:4}}>
+                    {!me&&<Text style={{color:challenger?'#C7D2FE':'#007AFF',fontWeight:'700',fontSize:11,marginBottom:2}}>{m.senderName}</Text>}
+                    {renderMsgText(m.content,challenger?true:me)}
+                    <Text style={{color:(me||challenger)?'rgba(255,255,255,0.6)':'#CBD5E1',fontSize:9,marginTop:3,alignSelf:'flex-end'}}>{fmtDateTime(m.sentAt)}</Text>
                   </TouchableOpacity>
                   {/* Reaction bubbles */}
                   {(()=>{
