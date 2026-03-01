@@ -90,7 +90,52 @@ const getLastSync = async (path: string): Promise<string|null> => {
   } catch { return null; }
 };
 
-// ── THEME ─────────────────────────────────────────────────────────────────────
+// ── OFFLINE MUTATION QUEUE ────────────────────────────────────────────────────
+// Queues failed mutations (POST/PUT/DELETE) when offline; replays on reconnect.
+const QUEUE_KEY = 'offline_queue';
+interface QueuedMutation { path:string; options:any; ts:number; }
+
+const enqueueOffline = async (path:string, options:any) => {
+  try {
+    const raw = await AsyncStorage.getItem(QUEUE_KEY);
+    const q: QueuedMutation[] = raw ? JSON.parse(raw) : [];
+    q.push({ path, options, ts: Date.now() });
+    await AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(q));
+  } catch {}
+};
+
+const replayOfflineQueue = async () => {
+  try {
+    const raw = await AsyncStorage.getItem(QUEUE_KEY);
+    if (!raw) return;
+    const q: QueuedMutation[] = JSON.parse(raw);
+    if (!q.length) return;
+    const remaining: QueuedMutation[] = [];
+    for (const item of q) {
+      try {
+        await api(item.path, item.options);
+      } catch {
+        // If still failing, keep in queue (but drop items older than 24h)
+        if (Date.now() - item.ts < 86400000) remaining.push(item);
+      }
+    }
+    await AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(remaining));
+  } catch {}
+};
+
+// Wrapper: tries API immediately; if offline queues the mutation
+const apiOrQueue = async (path:string, options:any): Promise<any> => {
+  try {
+    return await api(path, options);
+  } catch (e:any) {
+    const isOfflineErr = e.message?.includes('timed out') || e.message?.includes('Network request failed');
+    if (isOfflineErr && options.method && options.method !== 'GET') {
+      await enqueueOffline(path, options);
+      throw new Error('Offline — action queued and will sync when reconnected.');
+    }
+    throw e;
+  }
+};
 const LIGHT = {
   bg:'#F8FAFC', bg2:'#fff', bg3:'#F1F5F9',
   card:'#fff', cardBorder:'#F1F5F9',
@@ -119,21 +164,61 @@ const DARK = {
   rankBar:'#334155', winBar:'#475569',
   chatInput:'#334155', chatInputBorder:'#475569',
 };
-const useTheme = () => {
-  const scheme = useColorScheme();
-  return scheme === 'dark' ? DARK : LIGHT;
+// ── THEME CONTEXT ─────────────────────────────────────────────────────────────
+// Supports 'light' | 'dark' | 'system' — persisted to AsyncStorage
+type ThemeMode = 'light' | 'dark' | 'system';
+const THEME_KEY = 'app_theme_mode';
+
+interface ThemeCtx {
+  mode: ThemeMode;
+  C: typeof LIGHT;
+  setMode: (m: ThemeMode) => void;
+}
+const ThemeContext = React.createContext<ThemeCtx>({
+  mode: 'system', C: LIGHT, setMode: () => {},
+});
+
+const ThemeProvider = ({children}: {children: React.ReactNode}) => {
+  const systemScheme = useColorScheme();
+  const [mode, setModeState] = useState<ThemeMode>('system');
+
+  // Load saved preference on mount
+  useEffect(() => {
+    AsyncStorage.getItem(THEME_KEY).then(val => {
+      if (val === 'light' || val === 'dark' || val === 'system') setModeState(val);
+    }).catch(() => {});
+  }, []);
+
+  const setMode = (m: ThemeMode) => {
+    setModeState(m);
+    AsyncStorage.setItem(THEME_KEY, m).catch(() => {});
+  };
+
+  const resolved = (mode === 'system' || mode === 'light') ? 'light' : 'dark';
+  const C = resolved === 'dark' ? DARK : LIGHT;
+
+  return (
+    <ThemeContext.Provider value={{mode, C, setMode}}>
+      {children}
+    </ThemeContext.Provider>
+  );
 };
+
+const useTheme = () => React.useContext(ThemeContext).C;
+const useThemeCtx = () => React.useContext(ThemeContext);
 interface User { id:number; username:string; email:string; displayName:string; proficiency?:string; joinedAt?:string; }
-interface Member { id:number; playerId?:number; displayName:string; isGuest:boolean; currentRank:number; totalMatchesPlayed:number; totalMatchesWon:number; totalMatchesLost:number; winRate:number; daysPlayed:number; proficiency?:string; mvpCount?:number; }
+interface Member { id:number; playerId?:number; displayName:string; isGuest:boolean; currentRank:number; totalMatchesPlayed:number; totalMatchesWon:number; totalMatchesLost:number; winRate:number; daysPlayed:number; proficiency?:string; mvpCount?:number; eloRating?:number; currentWinStreak?:number; bestWinStreak?:number; sessionStreak?:number; }
 interface Match { id:number; matchNumber:number; member1Id:number; member2Id:number; member1Name:string; member2Name:string; member1Score:number; member2Score:number; winnerId?:number; status:string; member1WinProb:number; member2WinProb:number; team1Name?:string; team2Name?:string; team1Members?:string[]; team2Members?:string[]; }
 interface Team { id:number; name:string; matchesWon:number; matchesLost:number; members:Member[]; }
 interface Day { id:number; dayNumber:number; status:string; matchFormat:string; presentMembers:Member[]; teams:Team[]; matches:Match[]; timerSeconds:number; elapsedSeconds:number; startedAt?:string; endedAt?:string; mvpName?:string; mvpMemberId?:number; }
-interface Ranking { rank:number; memberId:number; displayName:string; isGuest:boolean; totalMatchesWon:number; totalMatchesPlayed:number; totalMatchesLost:number; winRate:number; daysPlayed:number; rankChangeSinceYesterday:number; proficiency?:string; mvpCount?:number; }
+interface Ranking { rank:number; memberId:number; displayName:string; isGuest:boolean; totalMatchesWon:number; totalMatchesPlayed:number; totalMatchesLost:number; winRate:number; daysPlayed:number; rankChangeSinceYesterday:number; proficiency?:string; mvpCount?:number; eloRating?:number; currentWinStreak?:number; bestWinStreak?:number; sessionStreak?:number; }
 interface Tournament { id:number; name:string; memberCount:number; daysPlayed:number; isAdmin:boolean; lastDayStatus:string; lastDayNumber:number; createdAt?:string; }
 interface TournamentDetail { id:number; name:string; memberCount:number; members:Member[]; admins:{playerId:number;displayName:string}[]; days:Day[]; currentDay?:Day; rankings:Ranking[]; isAdmin:boolean; createdAt?:string; }
-interface ChatMsg { id:number; senderId:number; senderName:string; content:string; type:string; sentAt:string; }
-interface MemberStats { memberId:number; displayName:string; proficiency?:string; currentRank:number; totalMatchesPlayed:number; totalMatchesWon:number; totalMatchesLost:number; winRate:number; daysPlayed:number; mvpCount:number; bestPartnerName?:string; bestRivalName?:string; dailyStats:{dayNumber:number;rank:number;matchesWon:number;matchesPlayed:number;pointsScored:number;pointsConceded:number;dayScore:number;isMvp:boolean;date:string}[]; }
+interface ChatMsg { id:number; senderId:number; senderName:string; content:string; type:string; sentAt:string; reactions?:{[emoji:string]:number[]}; }
+interface MemberStats { memberId:number; displayName:string; proficiency?:string; currentRank:number; totalMatchesPlayed:number; totalMatchesWon:number; totalMatchesLost:number; winRate:number; daysPlayed:number; mvpCount:number; eloRating?:number; currentWinStreak?:number; bestWinStreak?:number; sessionStreak?:number; bestPartnerName?:string; bestRivalName?:string; dailyStats:{dayNumber:number;rank:number;matchesWon:number;matchesPlayed:number;pointsScored:number;pointsConceded:number;dayScore:number;isMvp:boolean;date:string}[]; }
 interface EndDayEntry { rank:number; memberId:number; displayName:string; matchesWon:number; matchesLost:number; pointsScored:number; pointsConceded:number; rankChange:number; isMvp:boolean; proficiency?:string; dayScore:number; }
+interface SessionTemplate { name:string; format:string; nTeams:number; perTeam:number; savedBy?:string; savedAt?:string; }
+interface NotifPrefs { MATCH_RESULT:boolean; CHALLENGE:boolean; DAY_START:boolean; MILESTONE:boolean; }
 
 
 // Uses backend proxy. Backend can use Groq (free) or Ollama (local).
@@ -712,7 +797,7 @@ const StatsModal = ({memberId,memberName,tournamentId,onClose}:{memberId:number;
             </View>
             <Text style={{color:'#1E293B',fontWeight:'700',marginTop:4,fontSize:13}}>{stats.totalMatchesWon}W / {stats.totalMatchesPlayed} ({stats.totalMatchesPlayed?Math.round(stats.totalMatchesWon/stats.totalMatchesPlayed*100):0}%)</Text>
           </View>
-          <RankGraph dailyStats={stats.dailyStats??[]}/>
+          <RankGraph dailyStats={stats.dailyStats??[]} C={undefined}/>
           {stats.bestPartnerName&&<View style={[ss.card,{backgroundColor:'#DCFCE7',marginTop:6,padding:10}]}><Text style={{color:'#16A34A',fontWeight:'700'}}>🤝 Best Partner: {stats.bestPartnerName}</Text></View>}
           {stats.bestRivalName&&<View style={[ss.card,{backgroundColor:'#FEE2E2',marginTop:6,padding:10}]}><Text style={{color:'#DC2626',fontWeight:'700'}}>⚔ Rival: {stats.bestRivalName}</Text></View>}
           {mvpDays.length>0&&<View style={{marginTop:10}}>
@@ -741,7 +826,7 @@ const StatsModal = ({memberId,memberName,tournamentId,onClose}:{memberId:number;
 // ── USER SETTINGS MODAL ───────────────────────────────────────────────────────
 const UserSettingsModal = ({user,onClose,onUpdate,onLogout}:{user:User;onClose:()=>void;onUpdate:(u:User)=>void;onLogout:()=>void}) => {
   const C = useTheme();
-  const [tab,setTab]=useState<'Profile'|'Account'>('Profile');
+  const [tab,setTab]=useState<'Profile'|'Account'|'Notifications'>('Profile');
   const [displayName,setDisplayName]=useState(user.displayName);
   const [proficiency,setProficiency]=useState(user.proficiency||'Intermediate');
   const [currentPwd,setCurrentPwd]=useState('');
@@ -750,6 +835,9 @@ const UserSettingsModal = ({user,onClose,onUpdate,onLogout}:{user:User;onClose:(
   const [saving,setSaving]=useState(false);
   const [msg,setMsg]=useState('');
   const [msgType,setMsgType]=useState<'ok'|'err'>('ok');
+  const [notifPrefs,setNotifPrefs]=useState<NotifPrefs>({MATCH_RESULT:true,CHALLENGE:true,DAY_START:true,MILESTONE:true});
+  const [notifSaving,setNotifSaving]=useState(false);
+  const {mode: themeMode, setMode: setThemeMode} = useThemeCtx();
 
   const showMsg=(text:string,type:'ok'|'err'='ok')=>{setMsg(text);setMsgType(type);setTimeout(()=>setMsg(''),3000);};
 
@@ -800,9 +888,9 @@ const UserSettingsModal = ({user,onClose,onUpdate,onLogout}:{user:User;onClose:(
 
           {/* Tabs */}
           <View style={{flexDirection:'row',backgroundColor:C.bg3,borderRadius:10,padding:3,marginBottom:16}}>
-            {(['Profile','Account'] as const).map(t=>(
-              <TouchableOpacity key={t} style={{flex:1,paddingVertical:7,borderRadius:8,backgroundColor:tab===t?C.bg2:'transparent',alignItems:'center'}} onPress={()=>setTab(t)}>
-                <Text style={{color:tab===t?'#007AFF':C.text3,fontWeight:'700',fontSize:13}}>{t}</Text>
+            {(['Profile','Account','Notifications'] as const).map(tname=>(
+              <TouchableOpacity key={tname} style={{flex:1,paddingVertical:7,borderRadius:8,backgroundColor:tab===tname?C.bg2:'transparent',alignItems:'center'}} onPress={()=>setTab(tname)}>
+                <Text style={{color:tab===tname?'#007AFF':C.text3,fontWeight:'700',fontSize:11}}>{tname==='Notifications'?'🔔':tname}</Text>
               </TouchableOpacity>
             ))}
           </View>
@@ -824,6 +912,22 @@ const UserSettingsModal = ({user,onClose,onUpdate,onLogout}:{user:User;onClose:(
               <Text style={[ss.lbl,{color:C.text3,marginTop:4}]}>EMAIL</Text>
               <View style={{backgroundColor:C.bg3,borderRadius:10,padding:12,marginBottom:10}}>
                 <Text style={{color:C.text2,fontSize:14}}>{user.email}</Text>
+              </View>
+
+              <Text style={[ss.lbl,{color:C.text3,marginTop:4}]}>APPEARANCE</Text>
+              <View style={{flexDirection:'row',alignItems:'center',backgroundColor:C.bg3,borderRadius:14,padding:4,marginBottom:14}}>
+                <TouchableOpacity
+                  onPress={()=>setThemeMode('light')}
+                  style={{flex:1,flexDirection:'row',alignItems:'center',justifyContent:'center',gap:6,paddingVertical:11,borderRadius:10,backgroundColor:themeMode==='light'?'#fff':C.bg3}}>
+                  <Text style={{fontSize:16}}>☀️</Text>
+                  <Text style={{color:themeMode==='light'?'#1E293B':C.text3,fontWeight:themeMode==='light'?'800':'500',fontSize:13}}>Light</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={()=>setThemeMode('dark')}
+                  style={{flex:1,flexDirection:'row',alignItems:'center',justifyContent:'center',gap:6,paddingVertical:11,borderRadius:10,backgroundColor:themeMode==='dark'?'#1E293B':C.bg3}}>
+                  <Text style={{fontSize:16}}>🌙</Text>
+                  <Text style={{color:themeMode==='dark'?'#F1F5F9':C.text3,fontWeight:themeMode==='dark'?'800':'500',fontSize:13}}>Dark</Text>
+                </TouchableOpacity>
               </View>
 
               <TouchableOpacity style={[ss.btn,ss.btnBlue,saving&&ss.btnOff,{marginTop:4}]} onPress={saveProfile} disabled={saving}>
@@ -849,6 +953,40 @@ const UserSettingsModal = ({user,onClose,onUpdate,onLogout}:{user:User;onClose:(
               </TouchableOpacity>
 
               <Text style={{color:C.text3,fontSize:11,textAlign:'center',marginTop:16}}>Account: @{user.username} · {user.email}</Text>
+            </>}
+
+            {tab==='Notifications'&&<>
+              <Text style={[ss.lbl,{color:C.text3}]}>PUSH NOTIFICATION PREFERENCES</Text>
+              <Text style={{color:C.text3,fontSize:11,marginBottom:12}}>These settings apply per-tournament. Enable or disable specific notification types.</Text>
+              {([
+                ['MATCH_RESULT','🏓 Match Results','Get notified when matches are completed'],
+                ['CHALLENGE','⚔️ Challenge Alerts','Get notified when someone challenges you'],
+                ['DAY_START','📅 Session Start','Get notified when a session begins'],
+                ['MILESTONE','🔥 Milestones','Streaks, badges, and achievements'],
+              ] as [keyof NotifPrefs,string,string][]).map(([key,label,desc])=>(
+                <View key={key} style={{flexDirection:'row',alignItems:'center',paddingVertical:12,borderBottomWidth:1,borderBottomColor:C.cardBorder}}>
+                  <View style={{flex:1}}>
+                    <Text style={{color:C.text,fontWeight:'600',fontSize:14}}>{label}</Text>
+                    <Text style={{color:C.text3,fontSize:11,marginTop:2}}>{desc}</Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={()=>setNotifPrefs(p=>({...p,[key]:!p[key]}))}
+                    style={{width:48,height:26,borderRadius:13,backgroundColor:notifPrefs[key]?'#22C55E':'#94A3B8',padding:3,justifyContent:'center'}}>
+                    <View style={{width:20,height:20,borderRadius:10,backgroundColor:'#fff',alignSelf:notifPrefs[key]?'flex-end':'flex-start'}}/>
+                  </TouchableOpacity>
+                </View>
+              ))}
+              <TouchableOpacity style={[ss.btn,ss.btnGreen,{marginTop:16},notifSaving&&ss.btnOff]} disabled={notifSaving}
+                onPress={async()=>{
+                  setNotifSaving(true);
+                  try{
+                    await AsyncStorage.setItem('notifPrefs',JSON.stringify(notifPrefs));
+                    showMsg('Notification preferences saved!','ok');
+                  }catch{showMsg('Failed to save','err');}
+                  setNotifSaving(false);
+                }}>
+                {notifSaving?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>💾 Save Preferences</Text>}
+              </TouchableOpacity>
             </>}
 
             {!!msg&&<View style={{backgroundColor:msgType==='ok'?'#DCFCE7':'#FEE2E2',borderRadius:10,padding:10,marginTop:10}}>
@@ -998,6 +1136,72 @@ const RankGraphV2 = ({dailyStats,C:Cext}:{dailyStats:MemberStats['dailyStats'];C
   );
 };
 
+// ── WIN RATE TREND LINE GRAPH ─────────────────────────────────────────────────
+const WinRateTrendGraph = ({dailyStats, C}: {dailyStats: MemberStats['dailyStats']; C: any}) => {
+  const data = (dailyStats ?? []).filter(d => d.matchesPlayed > 0);
+  if (data.length < 2) return (
+    <Text style={{color:C.text3,fontSize:12,textAlign:'center',padding:8}}>
+      Play 2+ sessions to see win rate trend
+    </Text>
+  );
+  const W = 280, H = 80, PAD = 6;
+  const rates = data.map(d => d.matchesPlayed > 0 ? d.matchesWon / d.matchesPlayed : 0);
+  const minR = 0, maxR = 1;
+  const toX = (i:number) => PAD + (i / (data.length - 1)) * (W - PAD * 2);
+  const toY = (r:number) => H - PAD - ((r - minR) / (maxR - minR)) * (H - PAD * 2);
+  // Build SVG path
+  const points = rates.map((r, i) => `${i === 0 ? 'M' : 'L'}${toX(i).toFixed(1)},${toY(r).toFixed(1)}`).join(' ');
+  const areaPath = points + ` L${toX(data.length - 1).toFixed(1)},${H} L${toX(0).toFixed(1)},${H} Z`;
+  const avgRate = rates.reduce((s, r) => s + r, 0) / rates.length;
+  const trend = rates[rates.length - 1] > rates[0] + 0.05 ? '📈 Improving' : rates[rates.length - 1] < rates[0] - 0.05 ? '📉 Declining' : '➡️ Stable';
+  const trendColor = trend.includes('Improving') ? '#22C55E' : trend.includes('Declining') ? '#EF4444' : '#F59E0B';
+  return (
+    <View style={{marginVertical:4}}>
+      <Text style={[ss.secLbl,{color:C.text3}]}>WIN RATE TREND</Text>
+      <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+        <Text style={{color:trendColor,fontWeight:'700',fontSize:12}}>{trend}</Text>
+        <Text style={{color:C.text3,fontSize:11}}>Avg: {Math.round(avgRate*100)}%</Text>
+      </View>
+      {/* SVG-style canvas using Views */}
+      <View style={{height:H, width:'100%', backgroundColor:C.bg3, borderRadius:10, overflow:'hidden', position:'relative'}}>
+        {/* Grid lines at 25%, 50%, 75% */}
+        {[0.25, 0.5, 0.75].map(pct => (
+          <View key={pct} style={{position:'absolute',left:0,right:0,top:toY(pct),height:1,backgroundColor:C.cardBorder,opacity:0.6}}/>
+        ))}
+        {/* Labels */}
+        {[0.25, 0.5, 0.75].map(pct => (
+          <Text key={`l${pct}`} style={{position:'absolute',left:4,top:toY(pct)-9,color:C.text3,fontSize:8}}>{Math.round(pct*100)}%</Text>
+        ))}
+        {/* Data points + connecting lines */}
+        {rates.map((r, i) => {
+          const x = toX(i) / W * 100;
+          const y = toY(r);
+          const clr = r >= 0.6 ? '#22C55E' : r >= 0.4 ? '#3B82F6' : r >= 0.25 ? '#F59E0B' : '#EF4444';
+          return (
+            <View key={i}>
+              {i > 0 && (() => {
+                const x0 = toX(i-1), y0 = toY(rates[i-1]);
+                const x1 = toX(i), y1 = toY(r);
+                const dx = x1 - x0, dy = y1 - y0;
+                const len = Math.sqrt(dx*dx + dy*dy);
+                const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+                return (
+                  <View style={{position:'absolute',left:x0,top:y0,width:len,height:2,backgroundColor:clr,transformOrigin:'0 50%',transform:[{rotate:`${angle}deg`}],opacity:0.6}}/>
+                );
+              })()}
+              <View style={{position:'absolute',left:toX(i)-4,top:y-4,width:8,height:8,borderRadius:4,backgroundColor:clr,borderWidth:1.5,borderColor:'#fff'}}/>
+            </View>
+          );
+        })}
+      </View>
+      <View style={{flexDirection:'row',justifyContent:'space-between',marginTop:3}}>
+        <Text style={{color:C.text3,fontSize:9}}>Day {data[0]?.dayNumber}</Text>
+        <Text style={{color:C.text3,fontSize:9}}>Day {data[data.length-1]?.dayNumber}</Text>
+      </View>
+    </View>
+  );
+};
+
 // ── ANALYTICS DASHBOARD (full modal) ─────────────────────────────────────────
 const AnalyticsDashboard = ({stats,onClose}:{stats:MemberStats;onClose:()=>void}) => {
   const C = useTheme();
@@ -1084,6 +1288,59 @@ const AnalyticsDashboard = ({stats,onClose}:{stats:MemberStats;onClose:()=>void}
                   </View>
                 </View>
               </View>
+            </View>
+
+            {/* Win Rate Trend Graph */}
+            <View style={{backgroundColor:C.card,borderRadius:14,padding:14,marginBottom:10,shadowColor:'#000',shadowOpacity:0.04,shadowRadius:6,elevation:1}}>
+              <WinRateTrendGraph dailyStats={stats.dailyStats??[]} C={C}/>
+            </View>
+
+            {/* Elo Rating + Streaks */}
+            <View style={{backgroundColor:C.card,borderRadius:14,padding:14,marginBottom:10,shadowColor:'#000',shadowOpacity:0.04,shadowRadius:6,elevation:1}}>
+              <Text style={[ss.secLbl,{color:C.text3}]}>ELO RATING & STREAKS</Text>
+              <View style={{flexDirection:'row',gap:8,flexWrap:'wrap'}}>
+                <View style={{flex:1,minWidth:100,backgroundColor:'#EFF6FF',borderRadius:10,padding:10,alignItems:'center'}}>
+                  <Text style={{color:'#2563EB',fontWeight:'900',fontSize:22}}>{stats.eloRating??1200}</Text>
+                  <Text style={{color:'#3B82F6',fontSize:10,fontWeight:'700',marginTop:2}}>ELO RATING</Text>
+                  <Text style={{color:'#93C5FD',fontSize:9}}>{(stats.eloRating??1200)>=1400?'🔥 Elite':(stats.eloRating??1200)>=1300?'💪 Strong':(stats.eloRating??1200)>=1200?'📈 Avg':'📊 Calibrating'}</Text>
+                </View>
+                <View style={{flex:1,minWidth:100,backgroundColor:'#FFF7ED',borderRadius:10,padding:10,alignItems:'center'}}>
+                  <Text style={{color:'#EA580C',fontWeight:'900',fontSize:22}}>{stats.currentWinStreak??0}🔥</Text>
+                  <Text style={{color:'#F97316',fontSize:10,fontWeight:'700',marginTop:2}}>WIN STREAK</Text>
+                  <Text style={{color:'#FED7AA',fontSize:9}}>Best: {stats.bestWinStreak??0}</Text>
+                </View>
+                <View style={{flex:1,minWidth:100,backgroundColor:'#F0FDF4',borderRadius:10,padding:10,alignItems:'center'}}>
+                  <Text style={{color:'#16A34A',fontWeight:'900',fontSize:22}}>{stats.sessionStreak??0}</Text>
+                  <Text style={{color:'#22C55E',fontSize:10,fontWeight:'700',marginTop:2}}>SESSIONS</Text>
+                  <Text style={{color:'#86EFAC',fontSize:9}}>Attended 📅</Text>
+                </View>
+              </View>
+              {/* Milestone badges */}
+              {(()=>{
+                const badges=[];
+                if((stats.totalMatchesPlayed??0)>=100) badges.push(['🏅','100 Matches','legend']);
+                if((stats.totalMatchesPlayed??0)>=50) badges.push(['🎖','50 Matches','veteran']);
+                if((stats.mvpCount??0)>=5) badges.push(['👑','5x MVP','']);
+                if((stats.mvpCount??0)>=1) badges.push(['🏆','MVP Club','']);
+                if((stats.bestWinStreak??0)>=10) badges.push(['⚡','10 Streak','']);
+                if((stats.bestWinStreak??0)>=5) badges.push(['🔥','5 Streak','']);
+                if((stats.sessionStreak??0)>=20) badges.push(['💎','20 Sessions','']);
+                if((stats.sessionStreak??0)>=10) badges.push(['🌟','10 Sessions','']);
+                if(!badges.length) return null;
+                return (
+                  <View style={{marginTop:10}}>
+                    <Text style={[ss.secLbl,{color:C.text3}]}>BADGES</Text>
+                    <View style={{flexDirection:'row',flexWrap:'wrap',gap:6}}>
+                      {badges.map(([icon,label],i)=>(
+                        <View key={i} style={{backgroundColor:C.bg3,borderRadius:20,paddingHorizontal:10,paddingVertical:5,flexDirection:'row',alignItems:'center',gap:4}}>
+                          <Text style={{fontSize:14}}>{icon}</Text>
+                          <Text style={{color:C.text2,fontSize:11,fontWeight:'700'}}>{label}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                );
+              })()}
             </View>
 
             {/* Performance Heatmap */}
@@ -1358,6 +1615,8 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
   const [mutating,setMutating]=useState(false); // true during score submit / admin actions
   const [showChallenge,setShowChallenge]=useState(false);
   const [challengeTargets,setChallengeTargets]=useState<number[]>([]); // selected member ids to challenge
+  const [reactionMsgId,setReactionMsgId]=useState<number|null>(null); // msgId for reaction picker
+  const [msgReactions,setMsgReactions]=useState<{[msgId:number]:{[emoji:string]:number[]}}>({}); // local reaction store
 
   // Full load — fetches all data (members, rankings, history, current day)
   // Only called on initial load, tab switches, and after mutations
@@ -1536,6 +1795,65 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
       // If message truly failed, user will see their message didn't appear
     }
   };
+  const [loadingRef2] = [useRef(false)]; // placeholder to avoid naming conflict
+  const [templates,setTemplates]=useState<SessionTemplate[]>([]);
+  const [showTemplates,setShowTemplates]=useState(false);
+  const [savingTemplate,setSavingTemplate]=useState(false);
+  const [templateName,setTemplateName]=useState('');
+  const [rsvpSending,setRsvpSending]=useState(false);
+
+  const loadTemplates=useCallback(async()=>{
+    try{
+      const data=await api(`/tournaments/${t.id}/templates`);
+      setTemplates((data??[]).map((d:any)=>({
+        name:d.name||'Unnamed',
+        format:d.format||d.matchFormat||'FREE_FOR_ALL',
+        nTeams:parseInt(d.nTeams||d.numberOfTeams||'2'),
+        perTeam:parseInt(d.perTeam||d.playersPerTeam||'1'),
+        savedBy:d.savedBy||'',
+        savedAt:d.savedAt||'',
+      })));
+    }catch{}
+  },[t.id]);
+
+  const applyTemplate=(tmpl:SessionTemplate)=>{
+    setFmt(tmpl.format||'FREE_FOR_ALL');
+    setNTeams(String(tmpl.nTeams||2));
+    setPerTeam(String(tmpl.perTeam||1));
+    setShowTemplates(false);
+    Alert.alert('Template Applied',`"${tmpl.name}" loaded. Select players and start!`);
+  };
+
+  const saveTemplate=async()=>{
+    if(!templateName.trim())return;
+    setSavingTemplate(true);
+    try{
+      await api(`/tournaments/${t.id}/templates`,{method:'POST',body:JSON.stringify({
+        name:templateName.trim(),matchFormat:fmt,numberOfTeams:parseInt(nTeams),playersPerTeam:parseInt(perTeam),
+      })});
+      setTemplateName('');
+      await loadTemplates();
+      Alert.alert('Saved!',`Template "${templateName.trim()}" saved.`);
+    }catch(e:any){Alert.alert('Error',e.message);}
+    setSavingTemplate(false);
+  };
+
+  const sendRsvp=async()=>{
+    setRsvpSending(true);
+    try{
+      await api(`/tournaments/${t.id}/rsvp/send`,{method:'POST'});
+      Alert.alert('RSVP Sent!','All members have been notified to confirm attendance.');
+    }catch(e:any){Alert.alert('Error',e.message);}
+    setRsvpSending(false);
+  };
+
+  const submitRsvp=async(attending:boolean)=>{
+    try{
+      await api(`/tournaments/${t.id}/rsvp`,{method:'POST',body:JSON.stringify({attending})});
+      Alert.alert(attending?'✅ You\'re In!':'❌ You\'re Out',attending?'Great — admin has been notified.':'Got it — see you next time!');
+    }catch(e:any){Alert.alert('Error',e.message);}
+  };
+
   const loadH2H=async(m1:Member,m2:Member)=>{
     setH2hM1(m1);setH2hData(null);setH2hModal(true);
     try{setH2hData(await api(`/tournaments/${t.id}/head-to-head?member1Id=${m1.id}&member2Id=${m2.id}`));}catch{}
@@ -1712,6 +2030,21 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
     }catch(e:any){Alert.alert('Error',e.message);}
   };
 
+  const toggleReaction=(msgId:number,emoji:string)=>{
+    setMsgReactions(prev=>{
+      const current={...(prev[msgId]||{})};
+      const users=current[emoji]||[];
+      if(users.includes(user.id)){
+        current[emoji]=users.filter(id=>id!==user.id);
+        if(current[emoji].length===0) delete current[emoji];
+      } else {
+        current[emoji]=[...users,user.id];
+      }
+      return {...prev,[msgId]:current};
+    });
+    setReactionMsgId(null);
+  };
+
   // Derived values needed in JSX — defined here to avoid "not defined" crashes
   const mvpEntry = (endResult??[]).find(e=>e.isMvp);
 
@@ -1792,7 +2125,32 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
             </View>
           </View>}
 
-          {!day&&<Text style={{color:C.text3,textAlign:'center',padding:20}}>{isAdmin?'Tap "Start Day Session" to begin.':'No active session.'}</Text>}
+          {/* No active day — RSVP + admin can send attendance call */}
+          {!day&&isAdmin&&(
+            <TouchableOpacity style={{backgroundColor:'#DBEAFE',borderRadius:12,padding:12,flexDirection:'row',alignItems:'center',gap:10,borderWidth:1,borderColor:'#93C5FD'}}
+              onPress={sendRsvp} disabled={rsvpSending}>
+              {rsvpSending?<ActivityIndicator color="#1D4ED8"/>:<>
+                <Text style={{fontSize:18}}>📋</Text>
+                <View style={{flex:1}}>
+                  <Text style={{color:'#1D4ED8',fontWeight:'800',fontSize:14}}>Send RSVP to Members</Text>
+                  <Text style={{color:'#3B82F6',fontSize:11}}>Ask who's coming to the next session</Text>
+                </View>
+              </>}
+            </TouchableOpacity>
+          )}
+          {!day&&!isAdmin&&(
+            <View style={{backgroundColor:C.card,borderRadius:12,padding:12,borderWidth:1,borderColor:C.cardBorder}}>
+              <Text style={{color:C.text,fontWeight:'700',marginBottom:8}}>📋 Are you coming to the next session?</Text>
+              <View style={{flexDirection:'row',gap:8}}>
+                <TouchableOpacity style={{flex:1,backgroundColor:'#16A34A',borderRadius:10,padding:10,alignItems:'center'}} onPress={()=>submitRsvp(true)}>
+                  <Text style={{color:'#fff',fontWeight:'700'}}>✅ Yes, I'm in!</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={{flex:1,backgroundColor:'#EF4444',borderRadius:10,padding:10,alignItems:'center'}} onPress={()=>submitRsvp(false)}>
+                  <Text style={{color:'#fff',fontWeight:'700'}}>❌ Can't make it</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
           {/* Challenge button — visible to all members anytime */}
           {members.filter(m=>m.playerId&&m.playerId!==user.id).length>0&&(
             <TouchableOpacity
@@ -1900,6 +2258,11 @@ Join on TT Platform!`});
                     {(r.mvpCount??0)>0&&<View style={{backgroundColor:'#FEF9C3',paddingHorizontal:5,paddingVertical:1,borderRadius:4}}><Text style={{color:'#CA8A04',fontSize:9,fontWeight:'800'}}>🏆×{r.mvpCount}</Text></View>}
                   </View>
                   <Text style={{color:C.text3,fontSize:11,marginTop:2}}>{r.totalMatchesWon}W / {r.totalMatchesPlayed} played · {r.daysPlayed}d</Text>
+                  <View style={{flexDirection:'row',alignItems:'center',gap:6,marginTop:3}}>
+                    <Text style={{color:'#3B82F6',fontSize:10,fontWeight:'700'}}>Elo {r.eloRating??1200}</Text>
+                    {(r.currentWinStreak??0)>1&&<Text style={{color:'#F97316',fontSize:10,fontWeight:'700'}}>{r.currentWinStreak}🔥</Text>}
+                    {(r.sessionStreak??0)>0&&<Text style={{color:'#16A34A',fontSize:10}}>📅{r.sessionStreak}</Text>}
+                  </View>
                   <View style={{height:6,backgroundColor:C.winBar,borderRadius:4,marginTop:4,overflow:'hidden'}}>
                     <View style={{height:'100%',width:`${r.totalMatchesPlayed?Math.min(100,r.totalMatchesWon/r.totalMatchesPlayed*100):0}%`,backgroundColor:'#22C55E',borderRadius:4}}/>
                   </View>
@@ -1980,11 +2343,41 @@ Join on TT Platform!`});
               <View style={{flexDirection:me?'row-reverse':'row',gap:8,alignItems:'flex-end'}}>
                 {!me&&<View style={{width:26,height:26,borderRadius:13,backgroundColor:C.bg3,alignItems:'center',justifyContent:'center'}}><Text style={{color:'#007AFF',fontWeight:'800',fontSize:11}}>{(m.senderName??'?')[0]}</Text></View>}
                 <View style={{maxWidth:'75%'}}>
-                  <View style={{paddingHorizontal:12,paddingVertical:8,borderRadius:16,backgroundColor:challenger?'#FEF3C7':me?'#007AFF':C.msgOther,borderWidth:me?0:1,borderColor:challenger?'#F59E0B':C.msgOtherBorder,borderBottomRightRadius:me?4:16,borderBottomLeftRadius:me?16:4}}>
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onLongPress={()=>setReactionMsgId(reactionMsgId===m.id?null:m.id)}
+                    style={{paddingHorizontal:12,paddingVertical:8,borderRadius:16,backgroundColor:challenger?'#FEF3C7':me?'#007AFF':C.msgOther,borderWidth:me?0:1,borderColor:challenger?'#F59E0B':C.msgOtherBorder,borderBottomRightRadius:me?4:16,borderBottomLeftRadius:me?16:4}}>
                     {!me&&<Text style={{color:challenger?'#B45309':'#007AFF',fontWeight:'700',fontSize:11,marginBottom:2}}>{m.senderName}</Text>}
                     {renderMsgText(m.content,me)}
                     <Text style={{color:me?'rgba(255,255,255,0.6)':'#CBD5E1',fontSize:9,marginTop:3,alignSelf:'flex-end'}}>{fmtDateTime(m.sentAt)}</Text>
-                  </View>
+                  </TouchableOpacity>
+                  {/* Reaction bubbles */}
+                  {(()=>{
+                    const rx={...((m.reactions??{})),...(msgReactions[m.id]||{})};
+                    const entries=Object.entries(rx).filter(([,users])=>users.length>0);
+                    if(!entries.length) return null;
+                    return(
+                      <View style={{flexDirection:'row',flexWrap:'wrap',gap:4,marginTop:4,marginLeft:me?0:4,alignSelf:me?'flex-end':'flex-start'}}>
+                        {entries.map(([emoji,users])=>(
+                          <TouchableOpacity key={emoji} onPress={()=>toggleReaction(m.id,emoji)}
+                            style={{flexDirection:'row',alignItems:'center',backgroundColor:users.includes(user.id)?'#DBEAFE':C.bg3,borderRadius:12,paddingHorizontal:7,paddingVertical:3,borderWidth:1,borderColor:users.includes(user.id)?'#93C5FD':C.cardBorder}}>
+                            <Text style={{fontSize:13}}>{emoji}</Text>
+                            <Text style={{color:C.text2,fontSize:10,fontWeight:'700',marginLeft:2}}>{users.length}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    );
+                  })()}
+                  {/* Inline reaction picker when long-pressed */}
+                  {reactionMsgId===m.id&&(
+                    <View style={{flexDirection:'row',gap:6,marginTop:6,backgroundColor:C.card,borderRadius:20,padding:6,borderWidth:1,borderColor:C.cardBorder,alignSelf:me?'flex-end':'flex-start',shadowColor:'#000',shadowOpacity:0.1,shadowRadius:4,elevation:4}}>
+                      {['🏓','🔥','💀','😤','👏','🤩','😂','❤️'].map(e=>(
+                        <TouchableOpacity key={e} onPress={()=>toggleReaction(m.id,e)} style={{padding:3}}>
+                          <Text style={{fontSize:20}}>{e}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  )}
                   {!!challenger&&!answered&&(
                     <View style={{flexDirection:'row',gap:8,marginTop:6,marginLeft:4}}>
                       <TouchableOpacity
@@ -2092,6 +2485,17 @@ Join on TT Platform!`});
             <Text style={{color:'#92400E',fontSize:12}}>{mvpEntry.matchesWon}W/{mvpEntry.matchesWon+(mvpEntry.matchesLost??0)} · {mvpEntry.pointsScored}pts</Text>
           </View>}
           {!mvpEntry&&(endResult??[]).length>0&&<Text style={{color:C.text3,textAlign:'center',marginBottom:10,fontSize:12}}>No MVP (no completed matches)</Text>}
+          {/* MVP Poll reminder */}
+          <View style={{backgroundColor:C.bg3,borderRadius:10,padding:10,marginBottom:10,flexDirection:'row',alignItems:'center',gap:8}}>
+            <Text style={{fontSize:16}}>🗳️</Text>
+            <View style={{flex:1}}>
+              <Text style={{color:C.text,fontWeight:'700',fontSize:12}}>MVP Poll Posted in Chat</Text>
+              <Text style={{color:C.text3,fontSize:11}}>Head to the Chat tab to vote for today's MVP!</Text>
+            </View>
+            <TouchableOpacity onPress={()=>{setShowEndModal(false);setTab('Chat');}}>
+              <Text style={{color:'#007AFF',fontWeight:'700',fontSize:12}}>Vote →</Text>
+            </TouchableOpacity>
+          </View>
           <ScrollView style={{maxHeight:340}}>
             {(endResult??[]).sort((a,b)=>a.rank-b.rank).map((e,i)=>(
               <View key={e.memberId} style={{flexDirection:'row',alignItems:'center',gap:10,paddingVertical:9,borderBottomWidth:1,borderBottomColor:C.cardBorder}}>
@@ -2111,6 +2515,38 @@ Join on TT Platform!`});
         <View style={ss.overlay}><View style={[ss.modal,{maxHeight:'93%',backgroundColor:C.modal}]}>
           <Text style={[ss.modalTitle,{color:C.text}]}>Start Day Session</Text>
           <ScrollView showsVerticalScrollIndicator={false}>
+
+            {/* Session Templates row */}
+            <View style={{flexDirection:'row',gap:8,marginBottom:12}}>
+              <TouchableOpacity style={{flex:1,flexDirection:'row',alignItems:'center',gap:6,backgroundColor:'#EFF6FF',borderRadius:10,padding:10,borderWidth:1,borderColor:'#BFDBFE'}}
+                onPress={()=>{loadTemplates();setShowTemplates(true);}}>
+                <Text style={{fontSize:16}}>📋</Text>
+                <Text style={{color:'#1D4ED8',fontWeight:'700',fontSize:12}}>Load Template</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={{flex:1,flexDirection:'row',alignItems:'center',gap:6,backgroundColor:'#F0FDF4',borderRadius:10,padding:10,borderWidth:1,borderColor:'#BBF7D0'}}
+                onPress={()=>{setTemplateName('');Alert.alert('Save Template','Enter a name for this template',
+                  [{text:'Cancel',style:'cancel'},{text:'OK',onPress:(n:any)=>{if(n)setTemplateName(n);}}],
+                  {cancelable:true});
+                  // Fallback — show inline
+                }}>
+                <Text style={{fontSize:16}}>💾</Text>
+                <Text style={{color:'#16A34A',fontWeight:'700',fontSize:12}}>Save Current</Text>
+              </TouchableOpacity>
+            </View>
+            {/* Inline save template input */}
+            {templateName===''&&false&&null}
+            <View style={{marginBottom:10}}>
+              <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text,marginBottom:4}]}
+                placeholder="Template name (leave blank to skip saving)"
+                placeholderTextColor={C.text3}
+                value={templateName}
+                onChangeText={setTemplateName}/>
+              {templateName.trim().length>0&&(
+                <TouchableOpacity style={[ss.btn,{backgroundColor:'#16A34A'},savingTemplate&&ss.btnOff]} onPress={saveTemplate} disabled={savingTemplate}>
+                  {savingTemplate?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>💾 Save as "{templateName}"</Text>}
+                </TouchableOpacity>
+              )}
+            </View>
             <Text style={[ss.lbl,{color:C.text3}]}>FORMAT</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:10}}>
               <View style={{flexDirection:'row',gap:8}}>
@@ -2119,7 +2555,7 @@ Join on TT Platform!`});
                   ['BALANCED_TEAMS','⚖ Balanced Teams'],
                   ['TEAM_2V2','🏓 2v2 Doubles'],
                   ['CUSTOM_TEAMS','🎨 Custom Teams'],
-                ].map(([v,l]:[string,string])=>(
+                ].map(([v,l])=>(
                   <TouchableOpacity key={v} style={[ss.fmtBtn,{backgroundColor:C.fmtBtn,borderColor:C.fmtBtnBorder},fmt===v&&ss.fmtBtnOn]} onPress={()=>setFmt(v)}>
                     <Text style={{color:fmt===v?'#007AFF':C.text2,fontWeight:'700',fontSize:12}}>{l}</Text>
                   </TouchableOpacity>
@@ -2316,6 +2752,34 @@ Join on TT Platform!`});
         </View></View>
       </Modal>
 
+      {/* Session Templates Modal */}
+      <Modal visible={showTemplates} transparent animationType="slide" onRequestClose={()=>setShowTemplates(false)}>
+        <View style={ss.overlay}><View style={[ss.modal,{maxHeight:'80%',backgroundColor:C.modal}]}>
+          <Text style={[ss.modalTitle,{color:C.text}]}>📋 Session Templates</Text>
+          <Text style={{color:C.text3,fontSize:12,marginBottom:12}}>Tap a template to load its settings</Text>
+          <ScrollView style={{maxHeight:320}}>
+            {templates.length===0&&<Text style={{color:C.text3,textAlign:'center',padding:20}}>No saved templates yet. Configure a session and save it!</Text>}
+            {templates.map((tmpl,i)=>(
+              <TouchableOpacity key={i} onPress={()=>applyTemplate(tmpl)}
+                style={{backgroundColor:C.card,borderRadius:12,padding:14,marginBottom:8,borderWidth:1,borderColor:C.cardBorder,flexDirection:'row',alignItems:'center',gap:10}}>
+                <Text style={{fontSize:24}}>📋</Text>
+                <View style={{flex:1}}>
+                  <Text style={{color:C.text,fontWeight:'800',fontSize:14}}>{tmpl.name}</Text>
+                  <Text style={{color:C.text3,fontSize:11,marginTop:2}}>
+                    {tmpl.format==='FREE_FOR_ALL'?'🎯 Free For All':tmpl.format==='BALANCED_TEAMS'?'⚖️ Balanced':tmpl.format==='TEAM_2V2'?'🏓 2v2':tmpl.format} · {tmpl.nTeams} teams · {tmpl.perTeam}v{tmpl.perTeam}
+                  </Text>
+                  {tmpl.savedBy&&<Text style={{color:C.text3,fontSize:10}}>Saved by {tmpl.savedBy}</Text>}
+                </View>
+                <Text style={{color:'#007AFF',fontWeight:'700',fontSize:13}}>Apply →</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+          <TouchableOpacity style={[ss.btn,{backgroundColor:C.btnGray,marginTop:12}]} onPress={()=>setShowTemplates(false)}>
+            <Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Close</Text>
+          </TouchableOpacity>
+        </View></View>
+      </Modal>
+
       {/* Challenge Modal */}
       <Modal visible={showChallenge} transparent animationType="slide" onRequestClose={()=>setShowChallenge(false)}>
         <View style={ss.overlay}><View style={[ss.modal,{maxHeight:'85%',backgroundColor:C.modal}]}>
@@ -2454,7 +2918,7 @@ Join on TT Platform!`});
 };
 
 // ── APP ROOT ──────────────────────────────────────────────────────────────────
-export default function App() {
+function AppInner() {
   const C = useTheme();
   const [user,setUser]=useState<User|null>(null);
   const [selected,setSelected]=useState<Tournament|null>(null);
@@ -2465,6 +2929,9 @@ export default function App() {
     const boot = async () => {
       // Ping server in background to wake Render — don't await, don't block
       fetch(`${API_URL}/health`).catch(()=>{});
+
+      // Replay any queued offline mutations
+      replayOfflineQueue().catch(()=>{});
 
       try {
         const [[,tok],[,u]] = await AsyncStorage.multiGet(['token','user']);
@@ -2573,6 +3040,14 @@ export default function App() {
     <TournamentsScreen user={user} onSelect={setSelected} onLogout={logout} onSettings={()=>setShowSettings(true)}/>
     {showSettings&&<UserSettingsModal user={user} onClose={()=>setShowSettings(false)} onUpdate={updateUser} onLogout={logout}/>}
   </>;
+}
+
+export default function App() {
+  return (
+    <ThemeProvider>
+      <AppInner/>
+    </ThemeProvider>
+  );
 }
 
 // ── STYLES ────────────────────────────────────────────────────────────────────
