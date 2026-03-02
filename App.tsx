@@ -21,7 +21,7 @@ const api = async (path: string, options: any = {}) => {
   const token = await AsyncStorage.getItem('token');
   // 15 second timeout — prevents hanging when Render is waking up
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  const timeoutId = setTimeout(() => controller.abort(), 55000);
   try {
     const res = await fetch(`${API_URL}${path}`, {
       ...options,
@@ -34,6 +34,12 @@ const api = async (path: string, options: any = {}) => {
     try { data = text ? JSON.parse(text) : {}; } catch { data = { message: text || 'Server error' }; }
     if (res.status === 401) {
       // Token expired — clear storage and force re-login
+      await AsyncStorage.multiRemove(['token','user']);
+      if (_onAuthFail) _onAuthFail();
+      throw new Error('Session expired. Please log in again.');
+    }
+    // 401 from JwtAuthFilter when player deleted from DB
+    if (res.status === 401 && data.message?.includes('Player not found')) {
       await AsyncStorage.multiRemove(['token','user']);
       if (_onAuthFail) _onAuthFail();
       throw new Error('Session expired. Please log in again.');
@@ -2483,12 +2489,9 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
             <View><Text style={[ss.secLbl,{color:C.text3}]}>RANKED BY WINS/MATCHES</Text><Text style={{color:C.text3,fontSize:10}}>More wins per match = higher rank</Text></View>
             <View style={{flexDirection:'row',gap:6}}>
 <TouchableOpacity style={[ss.smBtn,{borderColor:'#22C55E'}]} onPress={()=>{
-    const top=(detail?.rankings??[]).slice(0,5).map((r,i)=>`${i===0?'🥇':i===1?'🥈':i===2?'🥉':'#'+r.rank} ${r.displayName} — ${r.totalMatchesWon}W/${r.totalMatchesPlayed}`).join('\n');
-    Share.share({
-      title: `${t.name} Rankings`,
-      message: `🏓 ${t.name} — Top Players\n\n${top}\n\nJoin on TT Platform!`
-    });
-  }}><Text style={{color:'#22C55E',fontSize:11,fontWeight:'700'}}>📤 Share</Text></TouchableOpacity>
+  const top=(detail?.rankings??[]).slice(0,5).map((r,i)=>`${i===0?'🥇':i===1?'🥈':i===2?'🥉':'#'+r.rank} ${r.displayName} — ${r.totalMatchesWon}W/${r.totalMatchesPlayed}`).join('\n');
+  Share.share({title:`${t.name} Rankings`,message:`🏓 ${t.name} — Top Players\n\n${top}\n\nJoin on TT Platform!`});
+}}><Text style={{color:'#22C55E',fontSize:11,fontWeight:'700'}}>📤 Share</Text></TouchableOpacity>
               {isAdmin&&<TouchableOpacity style={[ss.smBtn,{borderColor:'#007AFF'}]} onPress={()=>{const e:any={};(detail?.rankings??[]).forEach(r=>e[r.memberId]=String(r.rank));setRankEdits(e);setShowRankEditor(true);}}><Text style={{color:'#007AFF',fontSize:11,fontWeight:'700'}}>✏ Edit</Text></TouchableOpacity>}
             </View>
           </View>}
@@ -3171,14 +3174,32 @@ function AppInner() {
   const [booting,setBooting]=useState(true);
   const [showSettings,setShowSettings]=useState(false);
 
+  const [wakeMsg,setWakeMsg]=useState('Connecting...');
+
   useEffect(()=>{
     const boot = async () => {
-      // Ping server in background to wake Render — don't await, don't block
-      fetch(`${API_URL}/health`).catch(()=>{});
-
-      // Replay any queued offline mutations
+      // Replay queued offline mutations
       replayOfflineQueue().catch(()=>{});
 
+      // Wake up Render server — retry until alive or timeout
+      const wakePing = async () => {
+        for (let i = 0; i < 10; i++) {
+          try {
+            const r = await fetch(`${API_URL}/health`, {signal: AbortSignal.timeout(6000)});
+            if (r.ok) return true;
+          } catch {}
+          setWakeMsg(i < 2 ? 'Connecting...' : i < 5 ? 'Server waking up...' : 'Almost ready...');
+          await new Promise(r => setTimeout(r, 5000));
+        }
+        return false;
+      };
+
+      // Start wake ping but don't block login — just update message
+      wakePing().then(ok => {
+        if (!ok) setWakeMsg('Server slow — try again if issues');
+      });
+
+      // Restore session from storage immediately
       try {
         const [[,tok],[,u]] = await AsyncStorage.multiGet(['token','user']);
         if (tok && u) {
@@ -3262,7 +3283,9 @@ function AppInner() {
   const logout=async()=>{
     setUser(null);
     setSelected(null);
-    await AsyncStorage.clear();
+    // Only remove auth token — keep cache so data loads faster after re-login
+    await AsyncStorage.removeItem('token');
+    await AsyncStorage.removeItem('user');
   };
 
   // Wire up global 401 handler — auto-logout if token expires mid-session
@@ -3275,8 +3298,8 @@ function AppInner() {
       <Text style={{fontSize:64}}>🏓</Text>
       <Text style={{fontSize:22,fontWeight:'900',color:C.text,marginTop:12}}>TT Platform</Text>
       <ActivityIndicator color="#007AFF" style={{marginTop:20}}/>
-      <Text style={{color:C.text3,fontSize:12,marginTop:12,textAlign:'center',paddingHorizontal:40}}>Connecting to server...</Text>
-      <Text style={{color:C.text3,fontSize:10,marginTop:6,textAlign:'center',paddingHorizontal:40}}>First load may take 20-30s</Text>
+      <Text style={{color:C.text3,fontSize:13,marginTop:16,textAlign:'center',paddingHorizontal:40}}>{wakeMsg}</Text>
+      <Text style={{color:C.text3,fontSize:11,marginTop:6,textAlign:'center',paddingHorizontal:40}}>First load takes ~30s on free server</Text>
     </View>
   );
   const updateUser=(u:User)=>{ setUser(u); AsyncStorage.setItem('user',JSON.stringify(u)); };
