@@ -5,6 +5,7 @@ import {
   PermissionsAndroid, useColorScheme, Keyboard, Animated, Share,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+// Clipboard available from react-native
 import messaging from '@react-native-firebase/messaging';
 
 // ─── SERVER CONFIG ─────────────────────────────────────────────────────────────
@@ -225,8 +226,8 @@ interface Match { id:number; matchNumber:number; member1Id:number; member2Id:num
 interface Team { id:number; name:string; matchesWon:number; matchesLost:number; members:Member[]; }
 interface Day { id:number; dayNumber:number; status:string; matchFormat:string; presentMembers:Member[]; teams:Team[]; matches:Match[]; timerSeconds:number; elapsedSeconds:number; startedAt?:string; endedAt?:string; mvpName?:string; mvpMemberId?:number; }
 interface Ranking { rank:number; memberId:number; displayName:string; isGuest:boolean; totalMatchesWon:number; totalMatchesPlayed:number; totalMatchesLost:number; winRate:number; daysPlayed:number; rankChangeSinceYesterday:number; proficiency?:string; mvpCount?:number; eloRating?:number; currentWinStreak?:number; bestWinStreak?:number; sessionStreak?:number; }
-interface Tournament { id:number; name:string; memberCount:number; daysPlayed:number; isAdmin:boolean; lastDayStatus:string; lastDayNumber:number; createdAt?:string; }
-interface TournamentDetail { id:number; name:string; memberCount:number; members:Member[]; admins:{playerId:number;displayName:string}[]; days:Day[]; currentDay?:Day; rankings:Ranking[]; isAdmin:boolean; createdAt?:string; }
+interface Tournament { id:number; name:string; memberCount:number; daysPlayed:number; isAdmin:boolean; lastDayStatus:string; lastDayNumber:number; createdAt?:string; inviteCode?:string; }
+interface TournamentDetail { id:number; name:string; memberCount:number; members:Member[]; admins:{playerId:number;displayName:string}[]; days:Day[]; currentDay?:Day; rankings:Ranking[]; isAdmin:boolean; createdAt?:string; inviteCode?:string; }
 interface ChatMsg { id:number; senderId:number; senderName:string; content:string; type:string; sentAt:string; reactions?:{[emoji:string]:number[]}; }
 interface MemberStats { memberId:number; displayName:string; proficiency?:string; currentRank:number; totalMatchesPlayed:number; totalMatchesWon:number; totalMatchesLost:number; winRate:number; daysPlayed:number; mvpCount:number; eloRating?:number; currentWinStreak?:number; bestWinStreak?:number; sessionStreak?:number; bestPartnerName?:string; bestRivalName?:string; dailyStats:{dayNumber:number;rank:number;matchesWon:number;matchesPlayed:number;pointsScored:number;pointsConceded:number;dayScore:number;isMvp:boolean;date:string}[]; }
 interface EndDayEntry { rank:number; memberId:number; displayName:string; matchesWon:number; matchesLost:number; pointsScored:number; pointsConceded:number; rankChange:number; isMvp:boolean; proficiency?:string; dayScore:number; }
@@ -567,6 +568,20 @@ const AuthScreen = ({onLogin}:{onLogin:(u:User)=>void}) => {
   useEffect(()=>{
     const handleUrl=(event:{url:string})=>{
       const url=event.url;
+      // Handle invite deep link: ttplatform://invite/XXXXXXXX
+      if(url.startsWith('ttplatform://invite/')){
+        const code=url.replace('ttplatform://invite/','').split('?')[0].toUpperCase();
+        if(code) Alert.alert('Tournament Invite','Join tournament with code: '+code,[
+          {text:'Cancel',style:'cancel'},
+          {text:'Join',onPress:async()=>{
+            try{
+              const r=await api('/tournaments/join-invite',{method:'POST',body:JSON.stringify({inviteCode:code,password:''})});
+              onLogin&&onLogin({id:0,username:'',email:'',displayName:''}); // trigger refresh - handled by parent
+            }catch(e:any){Alert.alert('Error',e.message);}
+          }}
+        ]);
+        return;
+      }
       if(!url.startsWith('ttplatform://auth'))return;
       try{
         const params:any={};
@@ -1615,6 +1630,300 @@ const AnalyticsDashboard = ({stats,onClose}:{stats:MemberStats;onClose:()=>void}
 };
 
 
+
+// ── INVITE LINK MODAL ─────────────────────────────────────────────────────────
+const InviteModal = ({tournament, onClose}:{tournament:Tournament; onClose:()=>void}) => {
+  const C = useTheme();
+  const [code, setCode] = useState(tournament.inviteCode??'');
+  const [copied, setCopied] = useState(false);
+  const [regen, setRegen] = useState(false);
+  const inviteLink = `ttplatform://invite/${code}`;
+
+  const copy = () => {
+    // Show code in alert for easy manual copy (most reliable cross-device approach)
+    Alert.alert('Invite Code', `Your invite code:\n\n${code}\n\nShare this code with players to join "${tournament.name}"`, [
+      {text:'Share Instead', onPress: share},
+      {text:'OK'}
+    ]);
+    setCopied(true);
+    setTimeout(()=>setCopied(false), 2000);
+  };
+
+  const share = async () => {
+    try {
+      await Share.share({
+        message: `Join my TT Platform tournament "${tournament.name}"!
+
+Use invite code: ${code}
+
+Or tap: ${inviteLink}`,
+        title: `Join ${tournament.name}`,
+      });
+    } catch {}
+  };
+
+  const regenerate = async () => {
+    setRegen(true);
+    try {
+      const r = await api(`/tournaments/${tournament.id}/invite/regenerate`, {method:'POST'});
+      setCode(r.inviteCode);
+    } catch(e:any){Alert.alert('Error', e.message);}
+    setRegen(false);
+  };
+
+  return (
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <View style={[ss.overlay,{backgroundColor:C.overlay}]}>
+        <View style={[ss.modal,{backgroundColor:C.modal}]}>
+          <View style={{flexDirection:'row',alignItems:'center',marginBottom:16}}>
+            <Text style={{fontSize:22}}>🔗</Text>
+            <Text style={[ss.modalTitle,{color:C.text,marginLeft:8,marginBottom:0}]}>Invite Link</Text>
+            <TouchableOpacity onPress={onClose} style={{marginLeft:'auto',padding:6}}>
+              <Text style={{color:C.text3,fontSize:22}}>✕</Text>
+            </TouchableOpacity>
+          </View>
+
+          <Text style={{color:C.text3,fontSize:12,marginBottom:8}}>Share this code or link to invite members:</Text>
+
+          {/* Invite Code Display */}
+          <View style={{backgroundColor:C.bg3,borderRadius:12,padding:16,alignItems:'center',marginBottom:12}}>
+            <Text style={{color:C.text3,fontSize:11,fontWeight:'600',letterSpacing:1,marginBottom:4}}>INVITE CODE</Text>
+            <Text style={{color:C.text,fontSize:32,fontWeight:'900',letterSpacing:6,fontFamily:'monospace'}}>{code}</Text>
+          </View>
+
+          {/* Action Buttons */}
+          <View style={{flexDirection:'row',gap:8,marginBottom:8}}>
+            <TouchableOpacity style={[ss.btn,ss.btnBlue,{flex:1}]} onPress={copy}>
+              <Text style={ss.btnTxt}>{copied?'✓ Copied!':'Copy Link'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:'#7C3AED'}]} onPress={share}>
+              <Text style={ss.btnTxt}>Share 📤</Text>
+            </TouchableOpacity>
+          </View>
+
+          {tournament.isAdmin && (
+            <TouchableOpacity onPress={regenerate} disabled={regen}
+              style={{alignItems:'center',paddingVertical:10}}>
+              <Text style={{color:regen?C.text3:'#EF4444',fontSize:13}}>
+                {regen?'Generating...':'⟳ Generate new code (invalidates old one)'}
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          <Text style={{color:C.text3,fontSize:11,textAlign:'center',marginTop:4}}>
+            Anyone with this code can join your tournament
+          </Text>
+        </View>
+      </View>
+    </Modal>
+  );
+};
+
+// ── SESSION POLL MODAL ────────────────────────────────────────────────────────
+const CreatePollModal = ({tournamentId, onClose, onCreated}:{tournamentId:number; onClose:()=>void; onCreated:()=>void}) => {
+  const C = useTheme();
+  const [question, setQuestion] = useState('When should we play next?');
+  const [options, setOptions] = useState(['', '']);
+  const [loading, setLoading] = useState(false);
+
+  const addOption = () => { if(options.length < 6) setOptions(o=>[...o,'']); };
+  const removeOption = (i:number) => { if(options.length > 2) setOptions(o=>o.filter((_,idx)=>idx!==i)); };
+  const updateOption = (i:number, v:string) => setOptions(o=>o.map((x,idx)=>idx===i?v:x));
+
+  const submit = async () => {
+    if(!question.trim()) return Alert.alert('Error','Enter a question');
+    const filled = options.filter(o=>o.trim());
+    if(filled.length < 2) return Alert.alert('Error','Add at least 2 options');
+    setLoading(true);
+    try {
+      await api(`/tournaments/${tournamentId}/poll`, {method:'POST', body:JSON.stringify({question:question.trim(), options:filled})});
+      onCreated();
+      onClose();
+    } catch(e:any){Alert.alert('Error',e.message);}
+    setLoading(false);
+  };
+
+  return (
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <View style={[ss.overlay,{backgroundColor:C.overlay}]}>
+        <View style={[ss.modal,{backgroundColor:C.modal}]}>
+          <Text style={[ss.modalTitle,{color:C.text}]}>📊 Create Poll</Text>
+          <Text style={[ss.modalSub,{color:C.text3,marginBottom:12}]}>Ask the group when to play</Text>
+
+          <Text style={{color:C.text3,fontSize:12,fontWeight:'600',marginBottom:4}}>QUESTION</Text>
+          <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text,marginBottom:14}]}
+            value={question} onChangeText={setQuestion} placeholder="When should we play?" placeholderTextColor={C.text3}/>
+
+          <Text style={{color:C.text3,fontSize:12,fontWeight:'600',marginBottom:8}}>OPTIONS</Text>
+          {options.map((opt,i)=>(
+            <View key={i} style={{flexDirection:'row',alignItems:'center',gap:8,marginBottom:8}}>
+              <TextInput style={[ss.inp,{flex:1,backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text,marginBottom:0}]}
+                value={opt} onChangeText={v=>updateOption(i,v)}
+                placeholder={`Option ${i+1} (e.g. Mon 6pm)`} placeholderTextColor={C.text3}/>
+              {options.length > 2 && (
+                <TouchableOpacity onPress={()=>removeOption(i)} style={{padding:8}}>
+                  <Text style={{color:'#EF4444',fontSize:18}}>✕</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          ))}
+
+          {options.length < 6 && (
+            <TouchableOpacity onPress={addOption} style={{paddingVertical:8,alignItems:'center',marginBottom:8}}>
+              <Text style={{color:'#007AFF',fontWeight:'600'}}>+ Add option</Text>
+            </TouchableOpacity>
+          )}
+
+          <View style={{flexDirection:'row',gap:8,marginTop:8}}>
+            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={onClose}>
+              <Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[ss.btn,ss.btnBlue,{flex:1}]} onPress={submit} disabled={loading}>
+              <Text style={ss.btnTxt}>{loading?'Posting...':'Post Poll'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+};
+
+// ── SCHEDULE MATCH MODAL ──────────────────────────────────────────────────────
+const ScheduleMatchModal = ({tournamentId, members, currentUserId, onClose, onCreated}:
+  {tournamentId:number; members:Member[]; currentUserId:number; onClose:()=>void; onCreated:()=>void}) => {
+  const C = useTheme();
+  const [targetId, setTargetId] = useState<number|null>(null);
+  const [date, setDate] = useState('');
+  const [time, setTime] = useState('');
+  const [note, setNote] = useState('');
+  const [loading, setLoading] = useState(false);
+  const opponents = members.filter(m=>!m.isGuest && m.playerId !== currentUserId);
+
+  const submit = async () => {
+    if(!targetId) return Alert.alert('Error','Select an opponent');
+    if(!date.trim()||!time.trim()) return Alert.alert('Error','Enter date and time');
+    setLoading(true);
+    try {
+      const proposedTime = `${date.trim()} ${time.trim()}`;
+      await api(`/tournaments/${tournamentId}/schedule`, {method:'POST',
+        body:JSON.stringify({targetMemberId:targetId, proposedTime, note:note.trim()})});
+      onCreated();
+      onClose();
+    } catch(e:any){Alert.alert('Error',e.message);}
+    setLoading(false);
+  };
+
+  return (
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <View style={[ss.overlay,{backgroundColor:C.overlay}]}>
+        <View style={[ss.modal,{backgroundColor:C.modal}]}>
+          <Text style={[ss.modalTitle,{color:C.text}]}>📅 Schedule Match</Text>
+          <Text style={[ss.modalSub,{color:C.text3,marginBottom:12}]}>Propose a match time to another player</Text>
+
+          <Text style={{color:C.text3,fontSize:12,fontWeight:'600',marginBottom:8}}>OPPONENT</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}}>
+            <View style={{flexDirection:'row',gap:8}}>
+              {opponents.map(m=>(
+                <TouchableOpacity key={m.id} onPress={()=>setTargetId(m.id)}
+                  style={{paddingHorizontal:14,paddingVertical:8,borderRadius:20,
+                    backgroundColor:targetId===m.id?'#007AFF':C.bg3,
+                    borderWidth:1,borderColor:targetId===m.id?'#007AFF':C.cardBorder}}>
+                  <Text style={{color:targetId===m.id?'#fff':C.text,fontWeight:'600',fontSize:13}}>{m.displayName}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </ScrollView>
+
+          <Text style={{color:C.text3,fontSize:12,fontWeight:'600',marginBottom:8}}>DATE & TIME</Text>
+          <View style={{flexDirection:'row',gap:8,marginBottom:14}}>
+            <TextInput style={[ss.inp,{flex:1,backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text,marginBottom:0}]}
+              value={date} onChangeText={setDate} placeholder="e.g. Mon 15 Mar" placeholderTextColor={C.text3}/>
+            <TextInput style={[ss.inp,{flex:1,backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text,marginBottom:0}]}
+              value={time} onChangeText={setTime} placeholder="e.g. 6:30 PM" placeholderTextColor={C.text3}/>
+          </View>
+
+          <Text style={{color:C.text3,fontSize:12,fontWeight:'600',marginBottom:8}}>NOTE (optional)</Text>
+          <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text,marginBottom:14}]}
+            value={note} onChangeText={setNote} placeholder="e.g. Best of 3 sets" placeholderTextColor={C.text3}/>
+
+          <View style={{flexDirection:'row',gap:8}}>
+            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={onClose}>
+              <Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[ss.btn,ss.btnBlue,{flex:1}]} onPress={submit} disabled={loading}>
+              <Text style={ss.btnTxt}>{loading?'Sending...':'Propose'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+};
+
+// ── JOIN BY INVITE CODE MODAL ─────────────────────────────────────────────────
+const JoinByInviteModal = ({onClose, onJoined, prefillCode}:{onClose:()=>void; onJoined:(t:Tournament)=>void; prefillCode?:string}) => {
+  const C = useTheme();
+  const [code, setCode] = useState(prefillCode??'');
+  const [pwd, setPwd] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [needsPwd, setNeedsPwd] = useState(false);
+
+  const join = async () => {
+    if(!code.trim()) return Alert.alert('Error','Enter invite code');
+    setLoading(true);
+    try {
+      const r = await api('/tournaments/join-invite', {method:'POST',
+        body:JSON.stringify({inviteCode:code.trim().toUpperCase(), password:pwd})});
+      onJoined({id:r.id, name:r.name, memberCount:r.memberCount??1,
+        daysPlayed:r.days?.filter((d:any)=>d.status==='ENDED')?.length??0,
+        isAdmin:r.isAdmin??false, lastDayStatus:r.currentDay?.status??'NO_DAYS',
+        lastDayNumber:r.currentDay?.dayNumber??0, inviteCode:r.inviteCode});
+      onClose();
+    } catch(e:any){
+      if(e.message?.includes('password') || e.message?.includes('Wrong')) {
+        setNeedsPwd(true);
+        if(needsPwd) Alert.alert('Error', 'Wrong password');
+      } else {
+        Alert.alert('Error', e.message);
+      }
+    }
+    setLoading(false);
+  };
+
+  return (
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <View style={[ss.overlay,{backgroundColor:C.overlay}]}>
+        <View style={[ss.modal,{backgroundColor:C.modal}]}>
+          <Text style={[ss.modalTitle,{color:C.text}]}>🔗 Join via Invite</Text>
+          <Text style={[ss.modalSub,{color:C.text3,marginBottom:16}]}>Enter the invite code shared with you</Text>
+
+          <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text,
+            fontSize:22,textAlign:'center',fontWeight:'900',letterSpacing:4,fontFamily:'monospace'}]}
+            value={code} onChangeText={t=>setCode(t.toUpperCase())}
+            placeholder="XXXXXXXX" placeholderTextColor={C.text3}
+            autoCapitalize="characters" maxLength={8}/>
+
+          {needsPwd && (
+            <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text,marginTop:8}]}
+              value={pwd} onChangeText={setPwd} placeholder="Tournament password"
+              placeholderTextColor={C.text3} secureTextEntry/>
+          )}
+
+          <View style={{flexDirection:'row',gap:8,marginTop:16}}>
+            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={onClose}>
+              <Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[ss.btn,ss.btnGreen,{flex:1}]} onPress={join} disabled={loading}>
+              <Text style={ss.btnTxt}>{loading?'Joining...':'Join'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ── TOURNAMENTS LIST ──────────────────────────────────────────────────────────
 const TournamentsScreen = ({user,onSelect,onLogout,onSettings}:{user:User;onSelect:(t:Tournament)=>void;onLogout:()=>void;onSettings:()=>void}) => {
   const C = useTheme();
@@ -1622,6 +1931,8 @@ const TournamentsScreen = ({user,onSelect,onLogout,onSettings}:{user:User;onSele
   const [refreshing,setRefreshing]=useState(false);
   const [loadErr,setLoadErr]=useState('');
   const [modal,setModal]=useState<'create'|'join'|null>(null);
+  const [showInviteJoin,setShowInviteJoin]=useState(false);
+  const [showInviteLink,setShowInviteLink]=useState<Tournament|null>(null);
   const [name,setName]=useState('');
   const [pwd,setPwd]=useState('');
   const [menuT,setMenuT]=useState<Tournament|null>(null);
@@ -1716,6 +2027,7 @@ const TournamentsScreen = ({user,onSelect,onLogout,onSettings}:{user:User;onSele
       <View style={{flexDirection:'row',gap:10,paddingHorizontal:16,paddingBottom:8}}>
         <TouchableOpacity style={[ss.btn,ss.btnGreen,{flex:1,paddingVertical:10}]} onPress={()=>{setName('');setPwd('');setModal('create');}}><Text style={ss.btnTxt}>+ Create</Text></TouchableOpacity>
         <TouchableOpacity style={[ss.btn,ss.btnBlue,{flex:1,paddingVertical:10}]} onPress={()=>{setName('');setPwd('');setModal('join');}}><Text style={ss.btnTxt}>Join</Text></TouchableOpacity>
+        <TouchableOpacity style={[ss.btn,{flex:1,paddingVertical:10,backgroundColor:'#7C3AED'}]} onPress={()=>setShowInviteJoin(true)}><Text style={ss.btnTxt}>🔗 Code</Text></TouchableOpacity>
       </View>
       {initialLoad&&!loadErr?<TournamentSkeleton/>:null}
       {!!loadErr&&list.length===0&&<View style={{padding:24,alignItems:'center',gap:8}}>
@@ -1794,6 +2106,9 @@ const TournamentsScreen = ({user,onSelect,onLogout,onSettings}:{user:User;onSele
             }}>
               <Text style={{color:'#F59E0B',fontSize:15,fontWeight:'600'}}>🔐  Change Password</Text>
             </TouchableOpacity>
+            <TouchableOpacity style={{padding:18}} onPress={()=>{setMenuT(null); if(menuT) setShowInviteLink(menuT);}}>
+              <Text style={{color:'#7C3AED',fontSize:15,fontWeight:'600'}}>🔗  Share Invite Link</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={{padding:18}} onPress={doDelete}>
               <Text style={{color:'#EF4444',fontSize:15,fontWeight:'600'}}>🗑️  Delete Tournament</Text>
             </TouchableOpacity>
@@ -1814,6 +2129,8 @@ const TournamentsScreen = ({user,onSelect,onLogout,onSettings}:{user:User;onSele
         </View></View>
       </Modal>
     </SafeAreaView>
+      {showInviteJoin&&<JoinByInviteModal onClose={()=>setShowInviteJoin(false)} onJoined={t=>{setShowInviteJoin(false);onSelect(t);}}/>}
+      {showInviteLink&&<InviteModal tournament={showInviteLink} onClose={()=>setShowInviteLink(null)}/>}
   );
 };
 
@@ -1834,6 +2151,7 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
   const [showResult,setShowResult]=useState<Match|null>(null);
   const [showGuest,setShowGuest]=useState(false);
   const [showAdmins,setShowAdmins]=useState(false);
+  const [showInviteLink,setShowInviteLink]=useState(false);
   const [showRankEditor,setShowRankEditor]=useState(false);
   const [statsModal,setStatsModal]=useState<{id:number;name:string}|null>(null);
   const [h2hModal,setH2hModal]=useState(false);
@@ -1851,6 +2169,8 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
   const [msgs,setMsgs]=useState<ChatMsg[]>([]);
   const [chatTxt,setChatTxt]=useState('');
   const [mentionQuery,setMentionQuery]=useState<string|null>(null);
+  const [showPoll,setShowPoll]=useState(false);
+  const [showScheduleModal,setShowScheduleModal]=useState(false);
   const [mentionStart,setMentionStart]=useState(0);
   const chatInputRef=useRef<TextInput>(null);
   const chatRef=useRef<FlatList>(null);
@@ -2326,7 +2646,7 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
             :detailSync?<Text style={{color:C.text3,fontSize:10}}>Synced {detailSync}</Text>:null}
         </View>
         {isAdmin&&<View style={ss.admBadge}><Text style={ss.admBadgeTxt}>ADMIN</Text></View>}
-        <TouchableOpacity style={{padding:6}} onPress={shareTeam}><Text style={{fontSize:16}}>🔗</Text></TouchableOpacity>
+        <TouchableOpacity style={{padding:6}} onPress={()=>{if(detail?.inviteCode) setShowInviteLink(true); else shareTeam();}}><Text style={{fontSize:16}}>🔗</Text></TouchableOpacity>
         <TouchableOpacity style={[ss.aiBtn,{backgroundColor:C.bg3,borderColor:C.inpBorder}]} onPress={()=>{setAiA('');setAiQ('');setAiModal(true);}}><Text style={{fontSize:14}}>🤖</Text></TouchableOpacity>
         <TouchableOpacity onPress={onLogout}><Text style={{color:'#EF4444',fontWeight:'700',fontSize:12}}>Logout</Text></TouchableOpacity>
       </View>
@@ -2489,9 +2809,12 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
             <View><Text style={[ss.secLbl,{color:C.text3}]}>RANKED BY WINS/MATCHES</Text><Text style={{color:C.text3,fontSize:10}}>More wins per match = higher rank</Text></View>
             <View style={{flexDirection:'row',gap:6}}>
 <TouchableOpacity style={[ss.smBtn,{borderColor:'#22C55E'}]} onPress={()=>{
-  const top=(detail?.rankings??[]).slice(0,5).map((r,i)=>`${i===0?'🥇':i===1?'🥈':i===2?'🥉':'#'+r.rank} ${r.displayName} — ${r.totalMatchesWon}W/${r.totalMatchesPlayed}`).join('\n');
-  Share.share({title:`${t.name} Rankings`,message:`🏓 ${t.name} — Top Players\n\n${top}\n\nJoin on TT Platform!`});
-}}><Text style={{color:'#22C55E',fontSize:11,fontWeight:'700'}}>📤 Share</Text></TouchableOpacity>
+    const top=(detail?.rankings??[]).slice(0,5).map((r,i)=>`${i===0?'🥇':i===1?'🥈':i===2?'🥉':'#'+r.rank} ${r.displayName} — ${r.totalMatchesWon}W/${r.totalMatchesPlayed}`).join('\n');
+    Share.share({
+      title:`${t.name} Rankings`,
+      message:`🏓 ${t.name} — Top Players\n\n${top}\n\nJoin on TT Platform!`
+    });
+  }}><Text style={{color:'#22C55E',fontSize:11,fontWeight:'700'}}>📤 Share</Text></TouchableOpacity>
               {isAdmin&&<TouchableOpacity style={[ss.smBtn,{borderColor:'#007AFF'}]} onPress={()=>{const e:any={};(detail?.rankings??[]).forEach(r=>e[r.memberId]=String(r.rank));setRankEdits(e);setShowRankEditor(true);}}><Text style={{color:'#007AFF',fontSize:11,fontWeight:'700'}}>✏ Edit</Text></TouchableOpacity>}
             </View>
           </View>}
@@ -2580,6 +2903,80 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
             const sys=m.type!=='TEXT',me=m.senderId===user.id;
             const bg:any={MATCH_RESULT:'#DCFCE7',DAY_STARTED:'#DBEAFE',DAY_ENDED:'#FEF9C3',SYSTEM:C.systemMsg};
             const fg:any={MATCH_RESULT:'#16A34A',DAY_STARTED:'#1D4ED8',DAY_ENDED:'#CA8A04',SYSTEM:C.text3};
+
+            // POLL message rendering
+            if(m.type==='POLL'){
+              let poll:any={};
+              try{poll=JSON.parse(m.content);}catch{}
+              const totalVotes=Object.values(poll.votes||{}).reduce((s:any,v:any)=>s+v.length,0);
+              return(<View style={{marginVertical:4,paddingHorizontal:8}}>
+                <View style={{backgroundColor:C.card,borderRadius:16,padding:14,borderWidth:1,borderColor:'#7C3AED33'}}>
+                  <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:8}}>
+                    <Text style={{fontSize:16}}>📊</Text>
+                    <Text style={{color:'#7C3AED',fontWeight:'700',fontSize:13,flex:1}}>{poll.question||'Poll'}</Text>
+                  </View>
+                  <Text style={{color:C.text3,fontSize:10,marginBottom:6}}>by {m.senderName} · {totalVotes} vote{totalVotes!==1?'s':''}</Text>
+                  {(poll.options||[]).map((opt:string,i:number)=>{
+                    const votes=(poll.votes||{})[String(i)]||[];
+                    const myVote=votes.includes(user.id);
+                    const pct=totalVotes>0?Math.round(votes.length/totalVotes*100):0;
+                    return(<TouchableOpacity key={i} onPress={async()=>{
+                      try{await api(`/tournaments/${t.id}/poll/${m.id}/vote`,{method:'POST',body:JSON.stringify({optionIndex:i})});loadChat();}
+                      catch(e:any){Alert.alert('Error',e.message);}
+                    }} style={{marginBottom:8}}>
+                      <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:3}}>
+                        <Text style={{color:myVote?'#7C3AED':C.text,fontWeight:myVote?'700':'400',fontSize:13}}>{myVote?'✓ ':''}{opt}</Text>
+                        <Text style={{color:C.text3,fontSize:12}}>{pct}%</Text>
+                      </View>
+                      <View style={{height:6,backgroundColor:C.bg3,borderRadius:3,overflow:'hidden'}}>
+                        <View style={{height:'100%',width:`${pct}%`,backgroundColor:myVote?'#7C3AED':'#CBD5E1',borderRadius:3}}/>
+                      </View>
+                    </TouchableOpacity>);
+                  })}
+                  <Text style={{color:C.text3,fontSize:9,marginTop:4,textAlign:'right'}}>{fmtDateTime(m.sentAt)}</Text>
+                </View>
+              </View>);
+            }
+
+            // SCHEDULE message rendering
+            if(m.type==='SCHEDULE'){
+              let sch:any={};
+              try{sch=JSON.parse(m.content);}catch{}
+              const isTarget=sch.targetId&&members.find(mb=>mb.id===sch.targetId)?.playerId===user.id;
+              const isPending=sch.status==='PENDING';
+              const statusColor=sch.status==='ACCEPT'?'#22C55E':sch.status==='DECLINE'?'#EF4444':'#F59E0B';
+              const statusLabel=sch.status==='ACCEPT'?'✅ Accepted':sch.status==='DECLINE'?'❌ Declined':'⏳ Pending';
+              return(<View style={{marginVertical:4,paddingHorizontal:8}}>
+                <View style={{backgroundColor:C.card,borderRadius:16,padding:14,borderWidth:1,borderColor:'#F59E0B33'}}>
+                  <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:6}}>
+                    <Text style={{fontSize:16}}>📅</Text>
+                    <Text style={{color:'#92400E',fontWeight:'700',fontSize:13}}>Match Proposal</Text>
+                    <View style={{marginLeft:'auto',backgroundColor:statusColor+'22',paddingHorizontal:8,paddingVertical:2,borderRadius:10}}>
+                      <Text style={{color:statusColor,fontSize:11,fontWeight:'700'}}>{statusLabel}</Text>
+                    </View>
+                  </View>
+                  <Text style={{color:C.text,fontSize:13,marginBottom:2}}>
+                    <Text style={{fontWeight:'700'}}>{sch.proposerName}</Text> vs <Text style={{fontWeight:'700'}}>{sch.targetName}</Text>
+                  </Text>
+                  <Text style={{color:'#007AFF',fontSize:13,fontWeight:'600',marginBottom:2}}>🕐 {sch.time}</Text>
+                  {sch.note?<Text style={{color:C.text3,fontSize:12,marginBottom:6}}>{sch.note}</Text>:null}
+                  {isTarget&&isPending&&(
+                    <View style={{flexDirection:'row',gap:8,marginTop:8}}>
+                      <TouchableOpacity style={{flex:1,backgroundColor:'#22C55E',borderRadius:10,paddingVertical:8,alignItems:'center'}}
+                        onPress={async()=>{try{await api(`/tournaments/${t.id}/schedule/${m.id}/respond`,{method:'POST',body:JSON.stringify({action:'ACCEPT'})});loadChat();}catch(e:any){Alert.alert('Error',e.message);}}}>
+                        <Text style={{color:'#fff',fontWeight:'700'}}>✅ Accept</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={{flex:1,backgroundColor:'#EF4444',borderRadius:10,paddingVertical:8,alignItems:'center'}}
+                        onPress={async()=>{try{await api(`/tournaments/${t.id}/schedule/${m.id}/respond`,{method:'POST',body:JSON.stringify({action:'DECLINE'})});loadChat();}catch(e:any){Alert.alert('Error',e.message);}}}>
+                        <Text style={{color:'#fff',fontWeight:'700'}}>❌ Decline</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                  <Text style={{color:C.text3,fontSize:9,marginTop:4,textAlign:'right'}}>{fmtDateTime(m.sentAt)}</Text>
+                </View>
+              </View>);
+            }
+
             if(sys)return(<View style={{alignItems:'center',marginVertical:3}}>
               <View style={{backgroundColor:bg[m.type]||C.systemMsg,paddingHorizontal:12,paddingVertical:6,borderRadius:16,maxWidth:'88%'}}>
                 <Text style={{color:fg[m.type]||C.text3,fontSize:12,fontWeight:'600',textAlign:'center'}}>{m.content}</Text>
@@ -2677,9 +3074,19 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
               multiline
             />
           </View>
-          <TouchableOpacity style={{width:42,height:42,borderRadius:21,backgroundColor:chatTxt.trim()?'#007AFF':C.bg3,alignItems:'center',justifyContent:'center'}} onPress={sendMsg} disabled={!chatTxt.trim()}>
-            <Text style={{color:'#fff',fontWeight:'700'}}>➤</Text>
-          </TouchableOpacity>
+          <View style={{flexDirection:'row',gap:6}}>
+            <TouchableOpacity onPress={()=>setShowPoll(true)}
+              style={{width:42,height:42,borderRadius:21,backgroundColor:C.bg3,alignItems:'center',justifyContent:'center'}}>
+              <Text style={{fontSize:18}}>📊</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={()=>setShowScheduleModal(true)}
+              style={{width:42,height:42,borderRadius:21,backgroundColor:C.bg3,alignItems:'center',justifyContent:'center'}}>
+              <Text style={{fontSize:18}}>📅</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={{width:42,height:42,borderRadius:21,backgroundColor:chatTxt.trim()?'#007AFF':C.bg3,alignItems:'center',justifyContent:'center'}} onPress={sendMsg} disabled={!chatTxt.trim()}>
+              <Text style={{color:'#fff',fontWeight:'700'}}>➤</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </View>}
 
@@ -3162,6 +3569,9 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
 
       {statsModal&&<StatsModal memberId={statsModal.id} memberName={statsModal.name} tournamentId={t.id} onClose={()=>setStatsModal(null)}/>}
       {showLeague&&<LeagueScreen members={members} onClose={()=>setShowLeague(false)}/>}
+      {showPoll&&<CreatePollModal tournamentId={t.id} onClose={()=>setShowPoll(false)} onCreated={()=>loadChat(true)}/>}
+      {showScheduleModal&&<ScheduleMatchModal tournamentId={t.id} members={members} currentUserId={user.id} onClose={()=>setShowScheduleModal(false)} onCreated={()=>loadChat(true)}/>}
+      {showInviteLink&&detail?.inviteCode&&<InviteModal tournament={{...t,inviteCode:detail.inviteCode}} onClose={()=>setShowInviteLink(false)}/>}
     </SafeAreaView>
   );
 };
@@ -3173,8 +3583,24 @@ function AppInner() {
   const [selected,setSelected]=useState<Tournament|null>(null);
   const [booting,setBooting]=useState(true);
   const [showSettings,setShowSettings]=useState(false);
+  const [pendingInviteCode,setPendingInviteCode]=useState<string|null>(null);
 
   const [wakeMsg,setWakeMsg]=useState('Connecting...');
+
+  // Handle invite deep links when user is already logged in
+  useEffect(()=>{
+    const {Linking} = require('react-native');
+    const handleInviteUrl = (event:{url:string}) => {
+      const url = event.url;
+      if(url.startsWith('ttplatform://invite/')){
+        const code = url.replace('ttplatform://invite/','').split('?')[0].toUpperCase();
+        if(code) setPendingInviteCode(code);
+      }
+    };
+    const sub = Linking.addEventListener('url', handleInviteUrl);
+    Linking.getInitialURL().then((url:string|null)=>{if(url) handleInviteUrl({url});}).catch(()=>{});
+    return ()=>sub.remove();
+  },[]);
 
   useEffect(()=>{
     const boot = async () => {
@@ -3308,6 +3734,11 @@ function AppInner() {
   return <>
     <TournamentsScreen user={user} onSelect={setSelected} onLogout={logout} onSettings={()=>setShowSettings(true)}/>
     {showSettings&&<UserSettingsModal user={user} onClose={()=>setShowSettings(false)} onUpdate={updateUser} onLogout={logout}/>}
+    {pendingInviteCode&&<JoinByInviteModal
+      onClose={()=>setPendingInviteCode(null)}
+      onJoined={t=>{setPendingInviteCode(null); setSelected(t);}}
+      prefillCode={pendingInviteCode}
+    />}
   </>;
 }
 
