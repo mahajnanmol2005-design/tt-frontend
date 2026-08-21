@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "754294668657",
+    "project_id": "tt-app-8083b",
+    "storage_bucket": "tt-app-8083b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:754294668657:android:d332807f008fe98ce78ad0",
+        "android_client_info": {
+          "package_name": "com.ttplatform"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDndJBj1h4kDRY0BwL7rbs8C_dFClIDWWc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

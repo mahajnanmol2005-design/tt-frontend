@@ -1,0 +1,76 @@
+package com.ttplatform;
+
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Context;
+import android.content.Intent;
+import android.media.AudioAttributes;
+import android.net.Uri;
+import android.os.Build;
+import androidx.core.app.NotificationCompat;
+import com.google.firebase.messaging.FirebaseMessagingService;
+import com.google.firebase.messaging.RemoteMessage;
+
+public class MyFirebaseMessagingService extends FirebaseMessagingService {
+
+    private static final String CHANNEL_ID = "tt_platform_channel";
+    private static final String CHANNEL_NAME = "TT Platform";
+
+    @Override
+    public void onMessageReceived(RemoteMessage remoteMessage) {
+        super.onMessageReceived(remoteMessage);
+
+        String title = remoteMessage.getNotification() != null
+                ? remoteMessage.getNotification().getTitle()
+                : "TT Platform";
+        String body = remoteMessage.getNotification() != null
+                ? remoteMessage.getNotification().getBody()
+                : "";
+
+        sendNotification(title, body);
+    }
+
+    private void sendNotification(String title, String body) {
+        // Intent to open app when notification tapped
+        Intent intent = new Intent(this, MainActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+                this, 0, intent,
+                PendingIntent.FLAG_ONE_SHOT | PendingIntent.FLAG_IMMUTABLE
+        );
+
+        createNotificationChannel();
+
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)  // normal banner
+                .setDefaults(NotificationCompat.DEFAULT_SOUND)     // sound only, no vibration
+                .setContentIntent(pendingIntent);
+
+        NotificationManager manager =
+                (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        manager.notify((int) System.currentTimeMillis(), builder.build());
+    }
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    CHANNEL_ID,
+                    CHANNEL_NAME,
+                    NotificationManager.IMPORTANCE_DEFAULT  // normal banner, not heads-up
+            );
+            channel.setDescription("TT Platform match and chat notifications");
+            channel.enableLights(true);
+            channel.enableVibration(false);  // no vibration
+            channel.setShowBadge(true);  // app icon badge count
+
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            manager.createNotificationChannel(channel);
+        }
+    }
+}
