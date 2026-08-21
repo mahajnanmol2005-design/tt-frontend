@@ -227,7 +227,7 @@ interface Team { id:number; name:string; matchesWon:number; matchesLost:number; 
 interface Day { id:number; dayNumber:number; status:string; matchFormat:string; presentMembers:Member[]; teams:Team[]; matches:Match[]; timerSeconds:number; elapsedSeconds:number; startedAt?:string; endedAt?:string; mvpName?:string; mvpMemberId?:number; }
 interface Ranking { rank:number; memberId:number; displayName:string; isGuest:boolean; totalMatchesWon:number; totalMatchesPlayed:number; totalMatchesLost:number; winRate:number; daysPlayed:number; rankChangeSinceYesterday:number; proficiency?:string; mvpCount?:number; eloRating?:number; currentWinStreak?:number; bestWinStreak?:number; sessionStreak?:number; }
 interface Tournament { id:number; name:string; memberCount:number; daysPlayed:number; isAdmin:boolean; lastDayStatus:string; lastDayNumber:number; createdAt?:string; inviteCode?:string; }
-interface TournamentDetail { id:number; name:string; memberCount:number; members:Member[]; admins:{playerId:number;displayName:string}[]; days:Day[]; currentDay?:Day; rankings:Ranking[]; isAdmin:boolean; createdAt?:string; inviteCode?:string; }
+interface TournamentDetail { id:number; name:string; memberCount:number; members:Member[]; admins:{playerId:number;displayName:string}[]; days:Day[]; currentDay?:Day; challengeMatches?:Match[]; rankings:Ranking[]; isAdmin:boolean; createdAt?:string; inviteCode?:string; }
 interface ChatMsg { id:number; senderId:number; senderName:string; content:string; type:string; sentAt:string; reactions?:{[emoji:string]:number[]}; }
 interface MemberStats { memberId:number; displayName:string; proficiency?:string; currentRank:number; totalMatchesPlayed:number; totalMatchesWon:number; totalMatchesLost:number; winRate:number; daysPlayed:number; mvpCount:number; eloRating?:number; currentWinStreak?:number; bestWinStreak?:number; sessionStreak?:number; bestPartnerName?:string; bestRivalName?:string; dailyStats:{dayNumber:number;rank:number;matchesWon:number;matchesPlayed:number;pointsScored:number;pointsConceded:number;dayScore:number;isMvp:boolean;date:string}[]; }
 interface EndDayEntry { rank:number; memberId:number; displayName:string; matchesWon:number; matchesLost:number; pointsScored:number; pointsConceded:number; rankChange:number; isMvp:boolean; proficiency?:string; dayScore:number; }
@@ -428,9 +428,7 @@ const MembersSkeleton = () => {
 
 // ── SOCIAL AUTH CONFIG ────────────────────────────────────────────────────────
 const SOCIAL_PROVIDERS = [
-  { key:'google',  label:'Google',   bg:'#fff',     border:'#E2E8F0', textColor:'#1E293B', logoBg:'#4285F4', logoTxt:'G',  logoColor:'#fff' },
-  { key:'github',  label:'GitHub',   bg:'#24292E',  border:'#24292E', textColor:'#fff',    logoBg:'#fff',    logoTxt:'⌥',  logoColor:'#24292E' },
-  { key:'linkedin',label:'LinkedIn', bg:'#0A66C2',  border:'#0A66C2', textColor:'#fff',    logoBg:'#fff',    logoTxt:'in', logoColor:'#0A66C2' },
+  { key:'clerk', label:'Google, GitHub or LinkedIn', bg:'#fff', border:'#E2E8F0', textColor:'#1E293B', logoBg:'#6C47FF', logoTxt:'🔐', logoColor:'#fff' },
 ] as const;
 
 // ── FORGOT PASSWORD MODAL ─────────────────────────────────────────────────────
@@ -606,9 +604,11 @@ const AuthScreen = ({onLogin}:{onLogin:(u:User)=>void}) => {
     setError('');
     setSocialLoading(provider.key);
     try{
-      // Add timestamp to bust any cached OAuth session on the backend
+      // Add timestamp to bust any cached session/page-cache in the browser
       const ts = Date.now();
-      const url=`${API_URL.replace('/api','')}/oauth2/authorization/${provider.key}?ts=${ts}`;
+      const url = provider.key === 'clerk'
+        ? `${API_URL.replace('/api','')}/clerk-signin.html?ts=${ts}`
+        : `${API_URL.replace('/api','')}/oauth2/authorization/${provider.key}?ts=${ts}`;
       await Linking.openURL(url);
       setTimeout(()=>setSocialLoading(prev=>prev===provider.key?null:prev),60000);
     }catch(e:any){
@@ -1344,7 +1344,7 @@ const MatchTimeline = ({dailyStats,C}:{dailyStats:MemberStats['dailyStats'];C:an
 };
 
 // Rank progression line graph (improved from basic bars)
-const RankGraphV2 = ({dailyStats,C:Cext}:{dailyStats:MemberStats['dailyStats'];C?:any}) => {
+const RankGraphV1 = ({dailyStats,C:Cext}:{dailyStats:MemberStats['dailyStats'];C?:any}) => {
   const C = Cext || useTheme();
   const stats = dailyStats??[];
   if(stats.length<2) return <Text style={{color:C.text3,fontSize:12,textAlign:'center',padding:8}}>Play 2+ sessions to see rank progression</Text>;
@@ -1592,7 +1592,7 @@ const AnalyticsDashboard = ({stats,onClose}:{stats:MemberStats;onClose:()=>void}
 
             {/* Rank Progression */}
             <View style={{backgroundColor:C.card,borderRadius:14,padding:14,marginBottom:10,shadowColor:'#000',shadowOpacity:0.04,shadowRadius:6,elevation:1}}>
-              <RankGraphV2 dailyStats={stats.dailyStats??[]} C={C}/>
+              <RankGraphV1 dailyStats={stats.dailyStats??[]} C={C}/>
             </View>
 
             {/* Best Day */}
@@ -1789,30 +1789,174 @@ const CreatePollModal = ({tournamentId, onClose, onCreated}:{tournamentId:number
 };
 
 // ── SCHEDULE MATCH MODAL ──────────────────────────────────────────────────────
+// Pure RN — no external date picker package needed
+const DAYS   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
 const ScheduleMatchModal = ({tournamentId, members, currentUserId, onClose, onCreated}:
   {tournamentId:number; members:Member[]; currentUserId:number; onClose:()=>void; onCreated:()=>void}) => {
   const C = useTheme();
   const [targetId, setTargetId] = useState<number|null>(null);
-  const [date, setDate] = useState('');
-  const [time, setTime] = useState('');
   const [note, setNote] = useState('');
   const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState<'form'|'date'|'time'>('form');
+
+  // Date state
+  const now = new Date();
+  const [selYear,  setSelYear]  = useState(now.getFullYear());
+  const [selMonth, setSelMonth] = useState(now.getMonth());      // 0-11
+  const [selDay,   setSelDay]   = useState(now.getDate());       // 1-31
+  const [selHour,  setSelHour]  = useState(now.getHours());      // 0-23
+  const [selMin,   setSelMin]   = useState(Math.ceil(now.getMinutes()/15)*15 % 60);
+
   const opponents = members.filter(m=>!m.isGuest && m.playerId !== currentUserId);
+
+  const daysInMonth = (y:number,m:number) => new Date(y,m+1,0).getDate();
+  const fmtDate = () => `${DAYS[new Date(selYear,selMonth,selDay).getDay()]} ${selDay} ${MONTHS[selMonth]} ${selYear}`;
+  const fmtTime = () => { const h=selHour%12||12; const ampm=selHour<12?'AM':'PM'; return `${h}:${String(selMin).padStart(2,'0')} ${ampm}`; };
+
+  const prevMonth = () => { if(selMonth===0){setSelMonth(11);setSelYear(y=>y-1);}else setSelMonth(m=>m-1); setSelDay(1); };
+  const nextMonth = () => { if(selMonth===11){setSelMonth(0);setSelYear(y=>y+1);}else setSelMonth(m=>m+1); setSelDay(1); };
 
   const submit = async () => {
     if(!targetId) return Alert.alert('Error','Select an opponent');
-    if(!date.trim()||!time.trim()) return Alert.alert('Error','Enter date and time');
     setLoading(true);
     try {
-      const proposedTime = `${date.trim()} ${time.trim()}`;
+      const proposedTime = `${fmtDate()} at ${fmtTime()}`;
       await api(`/tournaments/${tournamentId}/schedule`, {method:'POST',
         body:JSON.stringify({targetMemberId:targetId, proposedTime, note:note.trim()})});
-      onCreated();
-      onClose();
+      onCreated(); onClose();
     } catch(e:any){Alert.alert('Error',e.message);}
     setLoading(false);
   };
 
+  // ── Calendar grid ──────────────────────────────────────────────────────────
+  if(step==='date') {
+    const firstDow = new Date(selYear,selMonth,1).getDay();
+    const totalDays = daysInMonth(selYear,selMonth);
+    const cells:number[] = [];
+    for(let i=0;i<firstDow;i++) cells.push(0);
+    for(let d=1;d<=totalDays;d++) cells.push(d);
+    while(cells.length%7!==0) cells.push(0);
+    const today = new Date(); today.setHours(0,0,0,0);
+    return(
+      <Modal visible transparent animationType="slide" onRequestClose={()=>setStep('form')}>
+        <View style={[ss.overlay,{backgroundColor:C.overlay}]}>
+          <View style={[ss.modal,{backgroundColor:C.modal,maxHeight:'85%'}]}>
+            <View style={{flexDirection:'row',alignItems:'center',marginBottom:16}}>
+              <TouchableOpacity onPress={()=>setStep('form')} style={{padding:6}}>
+                <Text style={{color:'#007AFF',fontSize:16}}>‹ Back</Text>
+              </TouchableOpacity>
+              <Text style={{flex:1,textAlign:'center',color:C.text,fontWeight:'800',fontSize:16}}>Pick Date</Text>
+            </View>
+            {/* Month nav */}
+            <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
+              <TouchableOpacity onPress={prevMonth} style={{padding:10}}>
+                <Text style={{color:'#007AFF',fontSize:22,fontWeight:'700'}}>‹</Text>
+              </TouchableOpacity>
+              <Text style={{color:C.text,fontWeight:'800',fontSize:16}}>{MONTHS[selMonth]} {selYear}</Text>
+              <TouchableOpacity onPress={nextMonth} style={{padding:10}}>
+                <Text style={{color:'#007AFF',fontSize:22,fontWeight:'700'}}>›</Text>
+              </TouchableOpacity>
+            </View>
+            {/* Day headers */}
+            <View style={{flexDirection:'row',marginBottom:6}}>
+              {['Su','Mo','Tu','We','Th','Fr','Sa'].map(d=>(
+                <Text key={d} style={{flex:1,textAlign:'center',color:C.text3,fontSize:12,fontWeight:'700'}}>{d}</Text>
+              ))}
+            </View>
+            {/* Calendar grid */}
+            {Array.from({length:cells.length/7},(_,row)=>(
+              <View key={row} style={{flexDirection:'row',marginBottom:4}}>
+                {cells.slice(row*7,(row+1)*7).map((d,col)=>{
+                  if(d===0) return <View key={col} style={{flex:1}}/>;
+                  const date=new Date(selYear,selMonth,d); date.setHours(0,0,0,0);
+                  const isPast=date<today;
+                  const isSel=d===selDay;
+                  return(
+                    <TouchableOpacity key={col} disabled={isPast} onPress={()=>{setSelDay(d);setStep('form');}}
+                      style={{flex:1,alignItems:'center',paddingVertical:8,borderRadius:20,
+                        backgroundColor:isSel?'#007AFF':'transparent'}}>
+                      <Text style={{color:isPast?C.text3:isSel?'#fff':C.text,fontWeight:isSel?'800':'400',fontSize:14}}>{d}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            ))}
+          </View>
+        </View>
+      </Modal>
+    );
+  }
+
+  // ── Time picker ────────────────────────────────────────────────────────────
+  if(step==='time') {
+    const hours   = Array.from({length:12},(_,i)=>i+1);   // 1-12
+    const minutes = [0,15,30,45];
+    const isPM    = selHour >= 12;
+    const disp12  = selHour%12||12;
+    return(
+      <Modal visible transparent animationType="slide" onRequestClose={()=>setStep('form')}>
+        <View style={[ss.overlay,{backgroundColor:C.overlay}]}>
+          <View style={[ss.modal,{backgroundColor:C.modal}]}>
+            <View style={{flexDirection:'row',alignItems:'center',marginBottom:16}}>
+              <TouchableOpacity onPress={()=>setStep('form')} style={{padding:6}}>
+                <Text style={{color:'#007AFF',fontSize:16}}>‹ Back</Text>
+              </TouchableOpacity>
+              <Text style={{flex:1,textAlign:'center',color:C.text,fontWeight:'800',fontSize:16}}>Pick Time</Text>
+            </View>
+            {/* Current display */}
+            <View style={{alignItems:'center',marginBottom:20}}>
+              <Text style={{color:'#007AFF',fontSize:48,fontWeight:'900',letterSpacing:2}}>
+                {disp12}:{String(selMin).padStart(2,'0')}
+              </Text>
+              <View style={{flexDirection:'row',gap:12,marginTop:8}}>
+                <TouchableOpacity onPress={()=>setSelHour(h=>h<12?h:h-12)}
+                  style={{paddingHorizontal:24,paddingVertical:8,borderRadius:20,backgroundColor:!isPM?'#007AFF':C.bg3}}>
+                  <Text style={{color:!isPM?'#fff':C.text,fontWeight:'700'}}>AM</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={()=>setSelHour(h=>h>=12?h:h+12)}
+                  style={{paddingHorizontal:24,paddingVertical:8,borderRadius:20,backgroundColor:isPM?'#007AFF':C.bg3}}>
+                  <Text style={{color:isPM?'#fff':C.text,fontWeight:'700'}}>PM</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+            {/* Hour grid */}
+            <Text style={{color:C.text3,fontSize:11,fontWeight:'700',marginBottom:8}}>HOUR</Text>
+            <View style={{flexDirection:'row',flexWrap:'wrap',gap:8,marginBottom:16}}>
+              {hours.map(h=>{
+                const h24 = isPM?(h===12?12:h+12):(h===12?0:h);
+                const sel = h24===selHour;
+                return(
+                  <TouchableOpacity key={h} onPress={()=>setSelHour(h24)}
+                    style={{width:52,paddingVertical:10,borderRadius:10,alignItems:'center',
+                      backgroundColor:sel?'#007AFF':C.bg3,borderWidth:1,borderColor:sel?'#007AFF':C.cardBorder}}>
+                    <Text style={{color:sel?'#fff':C.text,fontWeight:'700'}}>{h}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            {/* Minute row */}
+            <Text style={{color:C.text3,fontSize:11,fontWeight:'700',marginBottom:8}}>MINUTE</Text>
+            <View style={{flexDirection:'row',gap:8,marginBottom:16}}>
+              {minutes.map(m=>(
+                <TouchableOpacity key={m} onPress={()=>setSelMin(m)}
+                  style={{flex:1,paddingVertical:10,borderRadius:10,alignItems:'center',
+                    backgroundColor:m===selMin?'#007AFF':C.bg3,borderWidth:1,borderColor:m===selMin?'#007AFF':C.cardBorder}}>
+                  <Text style={{color:m===selMin?'#fff':C.text,fontWeight:'700'}}>{String(m).padStart(2,'0')}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TouchableOpacity style={[ss.btn,ss.btnBlue]} onPress={()=>setStep('form')}>
+              <Text style={ss.btnTxt}>Confirm Time</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    );
+  }
+
+  // ── Main form ──────────────────────────────────────────────────────────────
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
       <View style={[ss.overlay,{backgroundColor:C.overlay}]}>
@@ -1821,7 +1965,7 @@ const ScheduleMatchModal = ({tournamentId, members, currentUserId, onClose, onCr
           <Text style={[ss.modalSub,{color:C.text3,marginBottom:12}]}>Propose a match time to another player</Text>
 
           <Text style={{color:C.text3,fontSize:12,fontWeight:'600',marginBottom:8}}>OPPONENT</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:16}}>
             <View style={{flexDirection:'row',gap:8}}>
               {opponents.map(m=>(
                 <TouchableOpacity key={m.id} onPress={()=>setTargetId(m.id)}
@@ -1836,10 +1980,18 @@ const ScheduleMatchModal = ({tournamentId, members, currentUserId, onClose, onCr
 
           <Text style={{color:C.text3,fontSize:12,fontWeight:'600',marginBottom:8}}>DATE & TIME</Text>
           <View style={{flexDirection:'row',gap:8,marginBottom:14}}>
-            <TextInput style={[ss.inp,{flex:1,backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text,marginBottom:0}]}
-              value={date} onChangeText={setDate} placeholder="e.g. Mon 15 Mar" placeholderTextColor={C.text3}/>
-            <TextInput style={[ss.inp,{flex:1,backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text,marginBottom:0}]}
-              value={time} onChangeText={setTime} placeholder="e.g. 6:30 PM" placeholderTextColor={C.text3}/>
+            <TouchableOpacity onPress={()=>setStep('date')}
+              style={{flex:1,backgroundColor:C.bg3,borderRadius:10,paddingVertical:12,paddingHorizontal:14,
+                borderWidth:1,borderColor:C.cardBorder}}>
+              <Text style={{color:C.text3,fontSize:10,fontWeight:'600',marginBottom:2}}>📆 DATE</Text>
+              <Text style={{color:C.text,fontWeight:'700',fontSize:13}}>{fmtDate()}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={()=>setStep('time')}
+              style={{flex:1,backgroundColor:C.bg3,borderRadius:10,paddingVertical:12,paddingHorizontal:14,
+                borderWidth:1,borderColor:C.cardBorder}}>
+              <Text style={{color:C.text3,fontSize:10,fontWeight:'600',marginBottom:2}}>🕐 TIME</Text>
+              <Text style={{color:C.text,fontWeight:'700',fontSize:13}}>{fmtTime()}</Text>
+            </TouchableOpacity>
           </View>
 
           <Text style={{color:C.text3,fontSize:12,fontWeight:'600',marginBottom:8}}>NOTE (optional)</Text>
@@ -1864,29 +2016,20 @@ const ScheduleMatchModal = ({tournamentId, members, currentUserId, onClose, onCr
 const JoinByInviteModal = ({onClose, onJoined, prefillCode}:{onClose:()=>void; onJoined:(t:Tournament)=>void; prefillCode?:string}) => {
   const C = useTheme();
   const [code, setCode] = useState(prefillCode??'');
-  const [pwd, setPwd] = useState('');
   const [loading, setLoading] = useState(false);
-  const [needsPwd, setNeedsPwd] = useState(false);
 
   const join = async () => {
-    if(!code.trim()) return Alert.alert('Error','Enter invite code');
+    if(code.trim().length < 6) return Alert.alert('Error','Enter a valid invite code');
     setLoading(true);
     try {
       const r = await api('/tournaments/join-invite', {method:'POST',
-        body:JSON.stringify({inviteCode:code.trim().toUpperCase(), password:pwd})});
+        body:JSON.stringify({inviteCode:code.trim().toUpperCase()})});
       onJoined({id:r.id, name:r.name, memberCount:r.memberCount??1,
         daysPlayed:r.days?.filter((d:any)=>d.status==='ENDED')?.length??0,
         isAdmin:r.isAdmin??false, lastDayStatus:r.currentDay?.status??'NO_DAYS',
         lastDayNumber:r.currentDay?.dayNumber??0, inviteCode:r.inviteCode});
       onClose();
-    } catch(e:any){
-      if(e.message?.includes('password') || e.message?.includes('Wrong')) {
-        setNeedsPwd(true);
-        if(needsPwd) Alert.alert('Error', 'Wrong password');
-      } else {
-        Alert.alert('Error', e.message);
-      }
-    }
+    } catch(e:any){ Alert.alert('Error', e.message); }
     setLoading(false);
   };
 
@@ -1898,16 +2041,10 @@ const JoinByInviteModal = ({onClose, onJoined, prefillCode}:{onClose:()=>void; o
           <Text style={[ss.modalSub,{color:C.text3,marginBottom:16}]}>Enter the invite code shared with you</Text>
 
           <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text,
-            fontSize:22,textAlign:'center',fontWeight:'900',letterSpacing:4,fontFamily:'monospace'}]}
+            fontSize:22,textAlign:'center',fontWeight:'900',letterSpacing:4}]}
             value={code} onChangeText={t=>setCode(t.toUpperCase())}
             placeholder="XXXXXXXX" placeholderTextColor={C.text3}
             autoCapitalize="characters" maxLength={8}/>
-
-          {needsPwd && (
-            <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text,marginTop:8}]}
-              value={pwd} onChangeText={setPwd} placeholder="Tournament password"
-              placeholderTextColor={C.text3} secureTextEntry/>
-          )}
 
           <View style={{flexDirection:'row',gap:8,marginTop:16}}>
             <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={onClose}>
@@ -2013,7 +2150,7 @@ const TournamentsScreen = ({user,onSelect,onLogout,onSettings}:{user:User;onSele
   };
 
   const sClr:any={IN_PROGRESS:'#22C55E',ENDED:'#64748B',NO_DAYS:'#94A3B8'};
-  return(
+  return(<>
     <SafeAreaView style={[ss.screen,{backgroundColor:C.bg}]}>
       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',padding:16,paddingBottom:8}}>
         <View>
@@ -2129,8 +2266,9 @@ const TournamentsScreen = ({user,onSelect,onLogout,onSettings}:{user:User;onSele
         </View></View>
       </Modal>
     </SafeAreaView>
-      {showInviteJoin&&<JoinByInviteModal onClose={()=>setShowInviteJoin(false)} onJoined={t=>{setShowInviteJoin(false);onSelect(t);}}/>}
-      {showInviteLink&&<InviteModal tournament={showInviteLink} onClose={()=>setShowInviteLink(null)}/>}
+    {showInviteJoin&&<JoinByInviteModal onClose={()=>setShowInviteJoin(false)} onJoined={t=>{setShowInviteJoin(false);onSelect(t);}}/>}
+    {showInviteLink&&<InviteModal tournament={showInviteLink} onClose={()=>setShowInviteLink(null)}/>}
+  </>
   );
 };
 
@@ -2201,6 +2339,11 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
     setLoadError('');
     try{
       const d:TournamentDetail=await apiWithRetry(`/tournaments/${t.id}`);
+      // Also fetch challenge matches from today endpoint
+      try{
+        const todayR=await apiWithRetry(`/tournaments/${t.id}/today`);
+        d.challengeMatches=todayR.challengeMatches??[];
+      }catch{}
       setDetail(d);setIsOffline(false);setDetailSync('just now');
       if(d.currentDay?.status==='IN_PROGRESS'){
         setTimer(d.currentDay.elapsedSeconds??0);
@@ -2233,7 +2376,7 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
   const loadToday=useCallback(async()=>{
     try{
       const r=await apiWithRetry(`/tournaments/${t.id}/today`);
-      setDetail(prev=>prev?{...prev, currentDay:r.currentDay??undefined}:prev);
+      setDetail(prev=>prev?{...prev, currentDay:r.currentDay??undefined, challengeMatches:r.challengeMatches??[]}:prev);
       setIsOffline(false);
       if(r.currentDay?.status==='IN_PROGRESS'){
         setTimer(prev=>Math.abs(prev-(r.currentDay.elapsedSeconds??0))>3?(r.currentDay.elapsedSeconds??0):prev);
@@ -2279,7 +2422,7 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
 
   const startDay=async()=>{
     if(present.length<2)return Alert.alert('Error','Select at least 2 players');
-    if(fmt==='TEAM_2V2'&&present.length%4!==0)return Alert.alert('Error',`2v2 Doubles needs exactly 4, 8, 12... players.\nYou selected ${present.length}. Please add or remove a player.`);
+    if(fmt==='TEAM_2V2'&&present.length<4)return Alert.alert('Error','2v2 Doubles needs at least 4 players.');
     setMutating(true);
     try{await api(`/tournaments/${t.id}/days`,{method:'POST',body:JSON.stringify({presentMemberIds:present,matchFormat:fmt,numberOfTeams:parseInt(nTeams)||2,playersPerTeam:parseInt(perTeam)||2})});setShowStart(false);setPresent([]);load();}
     catch(e:any){Alert.alert('Error',e.message);}
@@ -2575,24 +2718,25 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
 
   const acceptChallenge=async(challenger:string)=>{
     try{
-      const reply=`✅ @${challenger} I accept your challenge! Let's play 🏓`;
-      await api(`/tournaments/${t.id}/chat`,{method:'POST',body:JSON.stringify({content:reply})});
-      // Look up both member IDs by display name / playerId
       const myMember=members.find(m=>m.playerId===user.id);
       const challengerMember=members.find(m=>m.displayName===challenger);
       if(myMember&&challengerMember){
-        try{
-          await api(`/tournaments/${t.id}/days/challenge-match`,{
-            method:'POST',
-            body:JSON.stringify({member1Id:challengerMember.id,member2Id:myMember.id}),
-          });
-          await load(); // refresh to show the new match
-        }catch(matchErr:any){
-          // Match creation failed — still accepted the challenge in chat
-          console.warn('Challenge match create failed:',matchErr?.message);
-        }
+        // Create challenge match immediately — works with or without active session
+        await api(`/tournaments/${t.id}/days/challenge-match`,{
+          method:'POST',
+          body:JSON.stringify({member1Id:challengerMember.id,member2Id:myMember.id}),
+        });
+        const reply=`✅ @${challenger} Challenge accepted! Match created in Today tab 🏓`;
+        await api(`/tournaments/${t.id}/chat`,{method:'POST',body:JSON.stringify({content:reply})});
+        setTab('Today');
+        await load();
+        await loadChat(true);
+      } else {
+        // Fallback — just post acceptance message
+        const reply=`✅ @${challenger} I accept your challenge! Let's play 🏓`;
+        await api(`/tournaments/${t.id}/chat`,{method:'POST',body:JSON.stringify({content:reply})});
+        await loadChat(true);
       }
-      await loadChat(true);
     }catch(e:any){Alert.alert('Error',e.message);}
   };
 
@@ -2740,6 +2884,74 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
           )}
           {day?.status==='ENDED'&&<View style={[ss.card,{backgroundColor:'#DCFCE7'}]}><Text style={{color:'#16A34A',fontWeight:'700',textAlign:'center'}}>✅ Day {day.dayNumber} completed!{day.mvpName?' 🏆 MVP: '+day.mvpName:''}</Text></View>}
 
+          {/* ── CHALLENGE MATCHES ── */}
+          {(detail?.challengeMatches??[]).length>0&&<>
+            <Text style={[ss.secLbl,{color:C.text3}]}>⚔️ CHALLENGE MATCHES</Text>
+            {(detail!.challengeMatches!).map(m=>{
+              const myId=members.find(mb=>mb.playerId===user.id)?.id;
+              const isMyMatch=m.member1Id===myId||m.member2Id===myId;
+              const done=m.status==='COMPLETED';
+              const side1Won=!!m.winnerId&&m.winnerId===m.member1Id;
+              const side2Won=!!m.winnerId&&m.winnerId===m.member2Id;
+              const presets=[{s1:11,s2:0},{s1:11,s2:5},{s1:11,s2:8},{s1:0,s2:11}];
+              return(
+                <View key={m.id} style={[ss.card,{backgroundColor:C.card},
+                  done?{borderLeftWidth:3,borderLeftColor:'#16A34A'}
+                  :isMyMatch?{borderLeftWidth:3,borderLeftColor:'#F59E0B'}
+                  :{borderLeftWidth:3,borderLeftColor:'#6366F1'}
+                ]}>
+                  <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+                    <View style={{flex:1}}>
+                      <Text style={{color:side1Won?'#16A34A':C.text,fontWeight:'800',fontSize:15}}>{m.member1Name}</Text>
+                      {side1Won&&<Text style={{color:'#16A34A',fontSize:10,fontWeight:'700'}}>🏆 Winner</Text>}
+                    </View>
+                    <View style={{paddingHorizontal:12,paddingVertical:6,borderRadius:10,backgroundColor:C.bg3,marginHorizontal:8}}>
+                      {done
+                        ?<Text style={{color:C.text,fontWeight:'900',fontSize:16}}>{m.member1Score}–{m.member2Score}</Text>
+                        :<Text style={{color:'#F59E0B',fontWeight:'900',fontSize:13}}>VS</Text>}
+                    </View>
+                    <View style={{flex:1,alignItems:'flex-end'}}>
+                      <Text style={{color:side2Won?'#16A34A':C.text,fontWeight:'800',fontSize:15}}>{m.member2Name}</Text>
+                      {side2Won&&<Text style={{color:'#16A34A',fontSize:10,fontWeight:'700',textAlign:'right'}}>🏆 Winner</Text>}
+                    </View>
+                  </View>
+                  {!done&&isMyMatch&&<>
+                    <View style={{height:1,backgroundColor:C.cardBorder,marginBottom:10}}/>
+                    <Text style={{color:C.text3,fontSize:10,fontWeight:'700',marginBottom:6}}>QUICK SCORE</Text>
+                    <View style={{flexDirection:'row',gap:6,marginBottom:8}}>
+                      {presets.map(({s1:ps1,s2:ps2},i)=>(
+                        <TouchableOpacity key={i}
+                          onPress={()=>Alert.alert('Confirm',`${m.member1Name} ${ps1}–${ps2} ${m.member2Name}`,[
+                            {text:'Cancel',style:'cancel'},
+                            {text:'Save',onPress:async()=>{
+                              setMutating(true);
+                              try{
+                                await api(`/matches/${m.id}/result`,{method:'POST',body:JSON.stringify({member1Score:ps1,member2Score:ps2})});
+                                loadToday();
+                              }catch(e:any){Alert.alert('Error',e.message);}
+                              finally{setMutating(false);}
+                            }}
+                          ])}
+                          style={{flex:1,paddingVertical:9,borderRadius:10,alignItems:'center',
+                            backgroundColor:ps1>ps2?'#DCFCE7':'#FEE2E2',
+                            borderWidth:1,borderColor:ps1>ps2?'#16A34A':'#DC2626'}}>
+                          <Text style={{color:ps1>ps2?'#15803D':'#B91C1C',fontWeight:'800',fontSize:12}}>{ps1}–{ps2}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    <TouchableOpacity
+                      style={{backgroundColor:C.bg3,borderRadius:10,paddingVertical:10,
+                        alignItems:'center',borderWidth:1,borderColor:'#007AFF'}}
+                      onPress={()=>{setShowResult(m);setS1('');setS2('');}}>
+                      <Text style={{color:'#007AFF',fontWeight:'700',fontSize:13}}>✏️ Enter Custom Score</Text>
+                    </TouchableOpacity>
+                  </>}
+                </View>
+              );
+            })}
+          </>}
+
+
           {day?.status==='IN_PROGRESS'&&<>
             {(day.teams??[]).length>0&&<>
               <Text style={[ss.secLbl,{color:C.text3}]}>TEAMS</Text>
@@ -2808,13 +3020,10 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
           ListHeaderComponent={<View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
             <View><Text style={[ss.secLbl,{color:C.text3}]}>RANKED BY WINS/MATCHES</Text><Text style={{color:C.text3,fontSize:10}}>More wins per match = higher rank</Text></View>
             <View style={{flexDirection:'row',gap:6}}>
-<TouchableOpacity style={[ss.smBtn,{borderColor:'#22C55E'}]} onPress={()=>{
-    const top=(detail?.rankings??[]).slice(0,5).map((r,i)=>`${i===0?'🥇':i===1?'🥈':i===2?'🥉':'#'+r.rank} ${r.displayName} — ${r.totalMatchesWon}W/${r.totalMatchesPlayed}`).join('\n');
-    Share.share({
-      title:`${t.name} Rankings`,
-      message:`🏓 ${t.name} — Top Players\n\n${top}\n\nJoin on TT Platform!`
-    });
-  }}><Text style={{color:'#22C55E',fontSize:11,fontWeight:'700'}}>📤 Share</Text></TouchableOpacity>
+              <TouchableOpacity style={[ss.smBtn,{borderColor:'#22C55E'}]} onPress={()=>{
+                 const top=(detail?.rankings??[]).slice(0,5).map((r,i)=>`${i===0?'🥇':i===1?'🥈':i===2?'🥉':'#'+r.rank} ${r.displayName} — ${r.totalMatchesWon}W/${r.totalMatchesPlayed}`).join('\n');
+                  Share.share({title:`${t.name} Rankings`,message:`🏓 ${t.name} — Top Players\n\n${top}\n\nJoin on TT Platform!`}).catch(()=>{});
+              }}><Text style={{color:'#22C55E',fontSize:11,fontWeight:'700'}}>📤 Share</Text></TouchableOpacity>
               {isAdmin&&<TouchableOpacity style={[ss.smBtn,{borderColor:'#007AFF'}]} onPress={()=>{const e:any={};(detail?.rankings??[]).forEach(r=>e[r.memberId]=String(r.rank));setRankEdits(e);setShowRankEditor(true);}}><Text style={{color:'#007AFF',fontSize:11,fontWeight:'700'}}>✏ Edit</Text></TouchableOpacity>}
             </View>
           </View>}
@@ -3074,14 +3283,14 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
               multiline
             />
           </View>
-          <View style={{flexDirection:'row',gap:6}}>
+          <View style={{flexDirection:'row',gap:5,alignItems:'center'}}>
             <TouchableOpacity onPress={()=>setShowPoll(true)}
-              style={{width:42,height:42,borderRadius:21,backgroundColor:C.bg3,alignItems:'center',justifyContent:'center'}}>
-              <Text style={{fontSize:18}}>📊</Text>
+              style={{width:40,height:40,borderRadius:20,backgroundColor:C.bg3,alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:C.cardBorder}}>
+              <Text style={{fontSize:17}}>📊</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={()=>setShowScheduleModal(true)}
-              style={{width:42,height:42,borderRadius:21,backgroundColor:C.bg3,alignItems:'center',justifyContent:'center'}}>
-              <Text style={{fontSize:18}}>📅</Text>
+              style={{width:40,height:40,borderRadius:20,backgroundColor:C.bg3,alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:C.cardBorder}}>
+              <Text style={{fontSize:17}}>📅</Text>
             </TouchableOpacity>
             <TouchableOpacity style={{width:42,height:42,borderRadius:21,backgroundColor:chatTxt.trim()?'#007AFF':C.bg3,alignItems:'center',justifyContent:'center'}} onPress={sendMsg} disabled={!chatTxt.trim()}>
               <Text style={{color:'#fff',fontWeight:'700'}}>➤</Text>
@@ -3221,7 +3430,7 @@ const DetailScreen = ({t,user,onBack,onLogout}:{t:Tournament;user:User;onBack:()
             {fmt==='TEAM_2V2'&&(
               <View style={{backgroundColor:'#EFF6FF',borderRadius:10,padding:12,marginBottom:10}}>
                 <Text style={{color:'#1D4ED8',fontWeight:'700',fontSize:13}}>🏓 2v2 Doubles Mode</Text>
-                <Text style={{color:'#3B82F6',fontSize:12,marginTop:4}}>Players are balanced into pairs. Needs exactly 4, 8, 12... players.</Text>
+                <Text style={{color:'#3B82F6',fontSize:12,marginTop:4}}>Players are paired by skill. With an odd number, the extra player rotates in — all players get equal matches.</Text>
               </View>
             )}
             {fmt!=='FREE_FOR_ALL'&&fmt!=='TEAM_2V2'&&<>
