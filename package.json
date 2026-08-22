@@ -9,13 +9,18 @@
     "test": "jest"
   },
   "dependencies": {
+    "@clerk/clerk-expo": "^2.9.8",
     "@react-native-async-storage/async-storage": "^1.24.0",
+    "@react-native-firebase/app": "^26.3.0",
+    "@react-native-firebase/messaging": "^26.3.0",
     "@react-navigation/native": "^6.1.9",
     "@react-navigation/native-stack": "^6.9.17",
-    "react": "18.2.0",
-    "react-native": "^0.84.0",
-    "react-native-safe-area-context": "^4.8.2",
-    "react-native-screens": "^3.29.0"
+    "expo": "~56.0.0",
+    "expo-web-browser": "^13.0.3",
+    "react": "19.2.8",
+    "react-native": "^0.85.0",
+    "react-native-safe-area-context": "^5.9.1",
+    "react-native-screens": "^4.27.0"
   },
   "devDependencies": {
     "@babel/core": "^7.20.0",
@@ -25,13 +30,14 @@
     "@react-native/eslint-config": "0.73.2",
     "@react-native/metro-config": "^0.84.0",
     "@react-native/typescript-config": "0.73.1",
-    "@types/react": "^18.2.6",
-    "@types/react-test-renderer": "^18.0.0",
+    "@types/react": "^19.1.1",
+    "@types/react-test-renderer": "^19.0.0",
     "babel-jest": "^23.6.0",
+    "babel-preset-expo": "~56.0.0",
     "eslint": "^8.19.0",
     "jest": "^25.0.0",
     "prettier": "2.8.8",
-    "react-test-renderer": "18.2.0",
+    "react-test-renderer": "19.2.8",
     "typescript": "5.0.4"
   },
   "engines": {

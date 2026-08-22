@@ -7,19 +7,51 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 // Clipboard available from react-native
 import messaging from '@react-native-firebase/messaging';
+import {
+  ClerkProvider, ClerkLoaded, SignedIn, SignedOut,
+  useAuth, useOAuth, useSignIn, useSignUp,
+} from '@clerk/clerk-expo';
+import * as WebBrowser from 'expo-web-browser';
+import {CLERK_PUBLISHABLE_KEY} from './clerkConfig';
 
 // ─── SERVER CONFIG ─────────────────────────────────────────────────────────────
-// Set this to your PC's local IP address (run `ipconfig` on Windows or `ifconfig` on Mac/Linux)
-// Example: '192.168.1.45' — must be on same WiFi as your phone
-const SERVER_IP = 'tt-bakend.onrender.com';
+const SERVER_IP = 'localhost:8080';
 const API_URL = `https://${SERVER_IP}/api`;
+
+// Set in clerkConfig.ts (gitignored — copy clerkConfig.example.ts to create it)
+
+WebBrowser.maybeCompleteAuthSession();
+
+// ─── CLERK TOKEN CACHE ──────────────────────────────────────────────────────────
+// Backs Clerk's session persistence with AsyncStorage (already a dependency),
+// so we don't need to pull in expo-secure-store just for this.
+const tokenCache = {
+  async getToken(key: string) {
+    try { return await AsyncStorage.getItem(key); } catch { return null; }
+  },
+  async saveToken(key: string, value: string) {
+    try { await AsyncStorage.setItem(key, value); } catch {}
+  },
+};
+
+// ─── CLERK TOKEN BRIDGE ──────────────────────────────────────────────────────────
+// api() below is a plain async function, not a component, so it can't call
+// useAuth() directly. This bridge (rendered once inside ClerkProvider) keeps a
+// module-level reference to getToken() so api() can reach the live session —
+// same shape as the getToken() call in the web demo's SyncUser component.
+let _getClerkToken: (() => Promise<string | null>) | null = null;
+const ClerkTokenBridge = () => {
+  const {getToken} = useAuth();
+  useEffect(() => { _getClerkToken = getToken; return () => { _getClerkToken = null; }; }, [getToken]);
+  return null;
+};
 
 // Global logout handler — set by App root, called when 401 received
 let _onAuthFail: (() => void) | null = null;
 const setAuthFailHandler = (fn: () => void) => { _onAuthFail = fn; };
 
 const api = async (path: string, options: any = {}) => {
-  const token = await AsyncStorage.getItem('token');
+  const token = _getClerkToken ? await _getClerkToken() : null;
   // 15 second timeout — prevents hanging when Render is waking up
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 55000);
@@ -34,20 +66,7 @@ const api = async (path: string, options: any = {}) => {
     let data: any = {};
     try { data = text ? JSON.parse(text) : {}; } catch { data = { message: text || 'Server error' }; }
     if (res.status === 401) {
-      // Token expired — clear storage and force re-login
-      await AsyncStorage.multiRemove(['token','user']);
-      if (_onAuthFail) _onAuthFail();
-      throw new Error('Session expired. Please log in again.');
-    }
-    // 401 from JwtAuthFilter when player deleted from DB
-    if (res.status === 401 && data.message?.includes('Player not found')) {
-      await AsyncStorage.multiRemove(['token','user']);
-      if (_onAuthFail) _onAuthFail();
-      throw new Error('Session expired. Please log in again.');
-    }
-    // 500 with "Player not found" = DB was wiped, token references deleted user → force logout
-    if (res.status === 500 && data.message?.includes('Player not found')) {
-      await AsyncStorage.multiRemove(['token','user']);
+      // Clerk session is invalid/expired — sign out locally
       if (_onAuthFail) _onAuthFail();
       throw new Error('Session expired. Please log in again.');
     }
@@ -239,7 +258,7 @@ interface NotifPrefs { MATCH_RESULT:boolean; CHALLENGE:boolean; DAY_START:boolea
 // Falls back to smart local responses if backend unavailable.
 const callAI = async (prompt: string): Promise<string> => {
   try {
-    const token = await AsyncStorage.getItem('token');
+    const token = _getClerkToken ? await _getClerkToken() : null;
     const res = await fetch(`${API_URL}/ai/ask`, {
       method: 'POST',
       headers: {'Content-Type':'application/json', ...(token?{Authorization:`Bearer ${token}`}:{})},
@@ -428,225 +447,128 @@ const MembersSkeleton = () => {
 
 // ── SOCIAL AUTH CONFIG ────────────────────────────────────────────────────────
 const SOCIAL_PROVIDERS = [
-  { key:'google',  label:'Google',   bg:'#fff',     border:'#E2E8F0', textColor:'#1E293B', logoBg:'#4285F4', logoTxt:'G',  logoColor:'#fff' },
-  { key:'github',  label:'GitHub',   bg:'#24292E',  border:'#24292E', textColor:'#fff',    logoBg:'#fff',    logoTxt:'⌥',  logoColor:'#24292E' },
-  { key:'linkedin',label:'LinkedIn', bg:'#0A66C2',  border:'#0A66C2', textColor:'#fff',    logoBg:'#fff',    logoTxt:'in', logoColor:'#0A66C2' },
+  { key:'oauth_google',   label:'Google',   bg:'#fff',    border:'#E2E8F0', textColor:'#1E293B', logoBg:'#4285F4', logoTxt:'G',  logoColor:'#fff' },
+  { key:'oauth_github',   label:'GitHub',   bg:'#24292E', border:'#24292E', textColor:'#fff',    logoBg:'#fff',    logoTxt:'⌥',  logoColor:'#24292E' },
+  { key:'oauth_linkedin_oidc', label:'LinkedIn', bg:'#0A66C2', border:'#0A66C2', textColor:'#fff', logoBg:'#fff',  logoTxt:'in', logoColor:'#0A66C2' },
 ] as const;
 
-// ── FORGOT PASSWORD MODAL ─────────────────────────────────────────────────────
-const ForgotPasswordModal = ({visible,onClose,onSuccess}:{visible:boolean;onClose:()=>void;onSuccess:(email:string)=>void}) => {
-  const C = useTheme();
-  const [email,setEmail]=useState('');
-  const [loading,setLoading]=useState(false);
-  const [error,setError]=useState('');
-
-  const send = async () => {
-    if(!email.trim()) return setError('Enter your email');
-    setError(''); setLoading(true);
-    try {
-      await fetch(`${API_URL}/auth/forgot-password`,{
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({email:email.trim().toLowerCase()}),
-      });
-      onSuccess(email.trim().toLowerCase());
-    } catch(e:any) { setError('Network error. Try again.'); }
-    setLoading(false);
-  };
-
-  return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={ss.overlay}><View style={[ss.modal,{backgroundColor:C.modal}]}>
-        <Text style={[ss.modalTitle,{color:C.text}]}>Forgot Password</Text>
-        <Text style={{color:C.text3,fontSize:13,marginBottom:14,lineHeight:19}}>Enter your email and we'll send a 6-digit OTP to reset your password.</Text>
-        {!!error&&<Text style={{color:'#EF4444',fontSize:12,marginBottom:10}}>{error}</Text>}
-        <Text style={[ss.lbl,{color:C.text3}]}>EMAIL</Text>
-        <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="your@email.com" placeholderTextColor={C.text3} value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" autoFocus/>
-        <View style={{flexDirection:'row',gap:8,marginTop:8}}>
-          <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={onClose}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
-          <TouchableOpacity style={[ss.btn,ss.btnBlue,{flex:1},loading&&ss.btnOff]} onPress={send} disabled={loading}>
-            {loading?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>Send OTP</Text>}
-          </TouchableOpacity>
-        </View>
-      </View></View>
-    </Modal>
-  );
-};
-
-// ── OTP VERIFY + NEW PASSWORD MODAL ──────────────────────────────────────────
-const ResetPasswordModal = ({visible,email,onClose,onDone}:{visible:boolean;email:string;onClose:()=>void;onDone:(user:User)=>void}) => {
-  const C = useTheme();
-  const [otp,setOtp]=useState('');
-  const [newPwd,setNewPwd]=useState('');
-  const [confirmPwd,setConfirmPwd]=useState('');
-  const [step,setStep]=useState<'otp'|'newpwd'>('otp');
-  const [loading,setLoading]=useState(false);
-  const [error,setError]=useState('');
-
-  const verifyOtp = async () => {
-    if(otp.length!==6) return setError('Enter the 6-digit OTP');
-    setError(''); setLoading(true);
-    try {
-      const res = await fetch(`${API_URL}/auth/verify-otp`,{
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({email,otp}),
-      });
-      const data = await res.json();
-      if(!res.ok) throw new Error(data.message||'Invalid OTP');
-      setStep('newpwd');
-    } catch(e:any) { setError(e.message); }
-    setLoading(false);
-  };
-
-  const resetPassword = async () => {
-    if(newPwd.length<6) return setError('Password must be at least 6 characters');
-    if(newPwd!==confirmPwd) return setError('Passwords do not match');
-    setError(''); setLoading(true);
-    try {
-      const res = await fetch(`${API_URL}/auth/reset-password`,{
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({email,otp,newPassword:newPwd}),
-      });
-      const data = await res.json();
-      if(!res.ok) throw new Error(data.message||'Reset failed');
-      await AsyncStorage.setItem('token',data.token);
-      onDone({id:data.userId,username:data.username,email:data.email,displayName:data.displayName||data.username,proficiency:data.proficiency});
-    } catch(e:any) { setError(e.message); }
-    setLoading(false);
-  };
-
-  return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={ss.overlay}><View style={[ss.modal,{backgroundColor:C.modal}]}>
-        {step==='otp'?<>
-          <Text style={[ss.modalTitle,{color:C.text}]}>Enter OTP</Text>
-          <Text style={{color:C.text3,fontSize:13,marginBottom:14}}>A 6-digit code was sent to{'\n'}<Text style={{color:C.text,fontWeight:'700'}}>{email}</Text></Text>
-          {!!error&&<Text style={{color:'#EF4444',fontSize:12,marginBottom:10}}>{error}</Text>}
-          <Text style={[ss.lbl,{color:C.text3}]}>OTP CODE</Text>
-          <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text,fontSize:22,letterSpacing:8,textAlign:'center',fontWeight:'800'}]}
-            placeholder="------" placeholderTextColor={C.text3} value={otp} onChangeText={t=>setOtp(t.replace(/\D/g,'').slice(0,6))}
-            keyboardType="number-pad" maxLength={6} autoFocus/>
-          <View style={{flexDirection:'row',gap:8,marginTop:8}}>
-            <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={onClose}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Back</Text></TouchableOpacity>
-            <TouchableOpacity style={[ss.btn,ss.btnBlue,{flex:1},loading&&ss.btnOff]} onPress={verifyOtp} disabled={loading}>
-              {loading?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>Verify</Text>}
-            </TouchableOpacity>
-          </View>
-        </>:<>
-          <Text style={[ss.modalTitle,{color:C.text}]}>New Password</Text>
-          <Text style={{color:C.text3,fontSize:13,marginBottom:14}}>OTP verified ✅ Set your new password.</Text>
-          {!!error&&<Text style={{color:'#EF4444',fontSize:12,marginBottom:10}}>{error}</Text>}
-          <Text style={[ss.lbl,{color:C.text3}]}>NEW PASSWORD</Text>
-          <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="Min 6 characters" placeholderTextColor={C.text3} value={newPwd} onChangeText={setNewPwd} secureTextEntry autoFocus/>
-          <Text style={[ss.lbl,{color:C.text3}]}>CONFIRM PASSWORD</Text>
-          <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="Re-enter password" placeholderTextColor={C.text3} value={confirmPwd} onChangeText={setConfirmPwd} secureTextEntry/>
-          <TouchableOpacity style={[ss.btn,ss.btnBlue,loading&&ss.btnOff,{marginTop:8}]} onPress={resetPassword} disabled={loading}>
-            {loading?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>Reset Password & Login</Text>}
-          </TouchableOpacity>
-        </>}
-      </View></View>
-    </Modal>
-  );
-};
+// Password reset now runs entirely through Clerk's own hosted flow
+// (triggered from useSignIn's "forgot password" strategy below) — no more
+// custom OTP modals or /auth/forgot-password calls.
 
 // ── AUTH ──────────────────────────────────────────────────────────────────────
-const AuthScreen = ({onLogin}:{onLogin:(u:User)=>void}) => {
+// Sign-in/sign-up UI built on Clerk's useSignIn/useSignUp/useOAuth hooks —
+// @clerk/clerk-expo doesn't ship prebuilt <SignIn/> components the way
+// @clerk/clerk-react does on web, so this mirrors the same building blocks.
+const AuthScreen = () => {
   const C = useTheme();
+  const {signIn, setActive: setActiveSignIn, isLoaded: signInLoaded} = useSignIn();
+  const {signUp, setActive: setActiveSignUp, isLoaded: signUpLoaded} = useSignUp();
+
   const [isLogin,setIsLogin]=useState(true);
   const [email,setEmail]=useState('');
-  const [username,setUsername]=useState('');
   const [password,setPassword]=useState('');
   const [proficiency,setProficiency]=useState('Intermediate');
   const [loading,setLoading]=useState(false);
   const [socialLoading,setSocialLoading]=useState<string|null>(null);
   const [error,setError]=useState('');
+
+  // Forgot-password flow (Clerk's own email-code reset)
   const [showForgot,setShowForgot]=useState(false);
-  const [forgotEmail,setForgotEmail]=useState('');
-  const [showReset,setShowReset]=useState(false);
-  const {Linking} = require('react-native');
+  const [resetStep,setResetStep]=useState<'request'|'code'>('request');
+  const [resetEmail,setResetEmail]=useState('');
+  const [resetCode,setResetCode]=useState('');
+  const [resetPwd,setResetPwd]=useState('');
+  const [resetLoading,setResetLoading]=useState(false);
+  const [resetError,setResetError]=useState('');
 
-  // Handle deep-link callback from OAuth
-  useEffect(()=>{
-    const handleUrl=(event:{url:string})=>{
-      const url=event.url;
-      // Handle invite deep link: ttplatform://invite/XXXXXXXX
-      if(url.startsWith('ttplatform://invite/')){
-        const code=url.replace('ttplatform://invite/','').split('?')[0].toUpperCase();
-        if(code) Alert.alert('Tournament Invite','Join tournament with code: '+code,[
-          {text:'Cancel',style:'cancel'},
-          {text:'Join',onPress:async()=>{
-            try{
-              const r=await api('/tournaments/join-invite',{method:'POST',body:JSON.stringify({inviteCode:code,password:''})});
-              onLogin&&onLogin({id:0,username:'',email:'',displayName:''}); // trigger refresh - handled by parent
-            }catch(e:any){Alert.alert('Error',e.message);}
-          }}
-        ]);
-        return;
-      }
-      if(!url.startsWith('ttplatform://auth'))return;
-      try{
-        const params:any={};
-        const query=url.split('?')[1]??'';
-        query.split('&').forEach(p=>{const [k,v]=p.split('=');if(k)params[k]=decodeURIComponent(v??'');});
-        if(params.token&&params.userId){
-          AsyncStorage.setItem('token',params.token).then(()=>{
-            onLogin({id:parseInt(params.userId),username:params.username??'',email:params.email??'',displayName:params.displayName??'Player',proficiency:params.proficiency??'Intermediate'});
-          });
-        } else if(params.error){
-          setError(decodeURIComponent(params.error));
-        }
-      }catch(e){setError('Social login failed. Please try again.');}
-      setSocialLoading(null);
-    };
-    const sub=Linking.addEventListener('url',handleUrl);
-    Linking.getInitialURL().then((url:string|null)=>{if(url)handleUrl({url});}).catch(()=>{});
-    return()=>sub.remove();
-  },[]);
+  const oauthGoogle = useOAuth({strategy:'oauth_google'});
+  const oauthGithub = useOAuth({strategy:'oauth_github'});
+  const oauthLinkedin = useOAuth({strategy:'oauth_linkedin_oidc'});
+  const oauthFlows: Record<string, ReturnType<typeof useOAuth>> = {
+    oauth_google: oauthGoogle, oauth_github: oauthGithub, oauth_linkedin_oidc: oauthLinkedin,
+  };
 
-  const openSocialAuth=async(provider:typeof SOCIAL_PROVIDERS[number])=>{
+  const openSocialAuth = async (provider: typeof SOCIAL_PROVIDERS[number]) => {
     setError('');
     setSocialLoading(provider.key);
-    try{
-      // Add timestamp to bust any cached OAuth session on the backend
-      const ts = Date.now();
-      const url=`${API_URL.replace('/api','')}/oauth2/authorization/${provider.key}?ts=${ts}`;
-      await Linking.openURL(url);
-      setTimeout(()=>setSocialLoading(prev=>prev===provider.key?null:prev),60000);
-    }catch(e:any){
-      setError(`Could not open ${provider.label} login.`);
-      setSocialLoading(null);
+    try {
+      const {createdSessionId, setActive} = await oauthFlows[provider.key].startOAuthFlow();
+      if (createdSessionId && setActive) {
+        await setActive({session: createdSessionId});
+      }
+      // SignedIn/SignedOut in AppInner picks up the new session automatically.
+    } catch (e:any) {
+      setError(`Could not sign in with ${provider.label}.`);
     }
+    setSocialLoading(null);
   };
 
   const submit = async () => {
     setError('');
     if (!email.trim()||!password) return Alert.alert('Error','Fill all fields');
-    if (!isLogin&&!username.trim()) return Alert.alert('Error','Enter username');
+    if (!signInLoaded || !signUpLoaded) return;
     setLoading(true);
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
     try {
-      const body = isLogin
-        ? {email:email.trim().toLowerCase(),password}
-        : {username:username.trim().toLowerCase(),email:email.trim().toLowerCase(),password,proficiency,displayName:username.trim()};
-      const res = await fetch(`${API_URL}/auth/${isLogin?'login':'register'}`, {
-        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body),
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-      const text = await res.text();
-      const data = text ? JSON.parse(text) : {};
-      if (!res.ok) { setError(data.message||'Server error'); setLoading(false); return; }
-      await AsyncStorage.setItem('token', data.token);
-      onLogin({id:data.userId,username:data.username,email:data.email,displayName:data.displayName||data.username,proficiency:data.proficiency});
-    } catch (e:any) {
-      clearTimeout(timeoutId);
-      if (e.name === 'AbortError') {
-        setError('Server is waking up (takes ~20s on first use). Please try again.');
+      if (isLogin) {
+        const attempt = await signIn.create({identifier: email.trim().toLowerCase(), password});
+        if (attempt.status === 'complete') {
+          await setActiveSignIn({session: attempt.createdSessionId});
+        } else {
+          setError('Additional verification required — check the Clerk dashboard flow for this account.');
+        }
       } else {
-        setError(`Connection failed. Check your internet.\n\nError: ${e.message}`);
+        const attempt = await signUp.create({
+          emailAddress: email.trim().toLowerCase(),
+          password,
+        });
+        // Simplest path: email verification disabled or handled via Clerk's
+        // hosted flow. If your Clerk instance requires email code verification,
+        // add a code-entry step here using signUp.attemptEmailAddressVerification.
+        if (attempt.status === 'complete') {
+          await setActiveSignUp({session: attempt.createdSessionId});
+        } else if (attempt.status === 'missing_requirements') {
+          await signUp.prepareEmailAddressVerification({strategy:'email_code'});
+          setError('Check your email for a verification code, then sign in.');
+          setIsLogin(true);
+        }
       }
+    } catch (e:any) {
+      setError(e?.errors?.[0]?.longMessage || e?.errors?.[0]?.message || e.message || 'Something went wrong.');
     }
     setLoading(false);
+  };
+
+  const requestReset = async () => {
+    if (!resetEmail.trim()) return setResetError('Enter your email');
+    setResetError(''); setResetLoading(true);
+    try {
+      await signIn.create({strategy:'reset_password_email_code', identifier: resetEmail.trim().toLowerCase()});
+      setResetStep('code');
+    } catch (e:any) {
+      setResetError(e?.errors?.[0]?.message || 'Could not send reset code.');
+    }
+    setResetLoading(false);
+  };
+
+  const submitReset = async () => {
+    if (resetCode.length < 6) return setResetError('Enter the code from your email');
+    if (resetPwd.length < 8) return setResetError('Password must be at least 8 characters');
+    setResetError(''); setResetLoading(true);
+    try {
+      const attempt = await signIn.attemptFirstFactor({
+        strategy: 'reset_password_email_code', code: resetCode, password: resetPwd,
+      });
+      if (attempt.status === 'complete') {
+        await setActiveSignIn({session: attempt.createdSessionId});
+        setShowForgot(false);
+      } else {
+        setResetError('Reset did not complete — please try again.');
+      }
+    } catch (e:any) {
+      setResetError(e?.errors?.[0]?.message || 'Invalid or expired code.');
+    }
+    setResetLoading(false);
   };
 
   return (
@@ -689,14 +611,14 @@ const AuthScreen = ({onLogin}:{onLogin:(u:User)=>void}) => {
 
         <View style={[ss.card,{backgroundColor:C.card}]}>
           <Text style={{fontSize:20,fontWeight:'800',color:C.text,marginBottom:14,textAlign:'center'}}>{isLogin?'Sign In with Email':'Create Account'}</Text>
-          {!isLogin&&<><Text style={[ss.lbl,{color:C.text3}]}>USERNAME</Text><TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="username" placeholderTextColor={C.text3} value={username} onChangeText={setUsername} autoCapitalize="none"/></>}
           <Text style={[ss.lbl,{color:C.text3}]}>EMAIL</Text>
           <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="your@email.com" placeholderTextColor={C.text3} value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none"/>
           <Text style={[ss.lbl,{color:C.text3}]}>PASSWORD</Text>
           <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="Password" placeholderTextColor={C.text3} value={password} onChangeText={setPassword} secureTextEntry/>
-          {!isLogin&&<><Text style={[ss.lbl,{color:C.text3}]}>SKILL LEVEL</Text><ProfPicker value={proficiency} onChange={setProficiency}/></>}
+          {!isLogin&&<><Text style={[ss.lbl,{color:C.text3}]}>SKILL LEVEL</Text><ProfPicker value={proficiency} onChange={setProficiency}/>
+            <Text style={{color:C.text3,fontSize:11,marginTop:-4,marginBottom:8}}>Saved to your profile after your first sign-in.</Text></>}
 
-          {isLogin&&<TouchableOpacity onPress={()=>setShowForgot(true)} style={{alignSelf:'flex-end',marginBottom:10,marginTop:-4}}>
+          {isLogin&&<TouchableOpacity onPress={()=>{setResetEmail(email);setResetStep('request');setResetError('');setShowForgot(true);}} style={{alignSelf:'flex-end',marginBottom:10,marginTop:-4}}>
             <Text style={{color:'#007AFF',fontSize:13,fontWeight:'600'}}>Forgot password?</Text>
           </TouchableOpacity>}
 
@@ -710,17 +632,39 @@ const AuthScreen = ({onLogin}:{onLogin:(u:User)=>void}) => {
         </View>
       </ScrollView>
 
-      <ForgotPasswordModal
-        visible={showForgot}
-        onClose={()=>setShowForgot(false)}
-        onSuccess={(em)=>{setForgotEmail(em);setShowForgot(false);setShowReset(true);}}
-      />
-      <ResetPasswordModal
-        visible={showReset}
-        email={forgotEmail}
-        onClose={()=>setShowReset(false)}
-        onDone={(u)=>{setShowReset(false);onLogin(u);}}
-      />
+      <Modal visible={showForgot} transparent animationType="slide" onRequestClose={()=>setShowForgot(false)}>
+        <View style={ss.overlay}><View style={[ss.modal,{backgroundColor:C.modal}]}>
+          {resetStep==='request'?<>
+            <Text style={[ss.modalTitle,{color:C.text}]}>Forgot Password</Text>
+            <Text style={{color:C.text3,fontSize:13,marginBottom:14,lineHeight:19}}>Enter your email and Clerk will send a reset code.</Text>
+            {!!resetError&&<Text style={{color:'#EF4444',fontSize:12,marginBottom:10}}>{resetError}</Text>}
+            <Text style={[ss.lbl,{color:C.text3}]}>EMAIL</Text>
+            <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="your@email.com" placeholderTextColor={C.text3} value={resetEmail} onChangeText={setResetEmail} keyboardType="email-address" autoCapitalize="none" autoFocus/>
+            <View style={{flexDirection:'row',gap:8,marginTop:8}}>
+              <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={()=>setShowForgot(false)}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Cancel</Text></TouchableOpacity>
+              <TouchableOpacity style={[ss.btn,ss.btnBlue,{flex:1},resetLoading&&ss.btnOff]} onPress={requestReset} disabled={resetLoading}>
+                {resetLoading?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>Send Code</Text>}
+              </TouchableOpacity>
+            </View>
+          </>:<>
+            <Text style={[ss.modalTitle,{color:C.text}]}>Reset Password</Text>
+            <Text style={{color:C.text3,fontSize:13,marginBottom:14}}>Enter the code sent to{'\n'}<Text style={{color:C.text,fontWeight:'700'}}>{resetEmail}</Text></Text>
+            {!!resetError&&<Text style={{color:'#EF4444',fontSize:12,marginBottom:10}}>{resetError}</Text>}
+            <Text style={[ss.lbl,{color:C.text3}]}>CODE</Text>
+            <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text,fontSize:22,letterSpacing:8,textAlign:'center',fontWeight:'800'}]}
+              placeholder="------" placeholderTextColor={C.text3} value={resetCode} onChangeText={t=>setResetCode(t.replace(/\D/g,'').slice(0,6))}
+              keyboardType="number-pad" maxLength={6} autoFocus/>
+            <Text style={[ss.lbl,{color:C.text3}]}>NEW PASSWORD</Text>
+            <TextInput style={[ss.inp,{backgroundColor:C.inp,borderColor:C.inpBorder,color:C.text}]} placeholder="Min 8 characters" placeholderTextColor={C.text3} value={resetPwd} onChangeText={setResetPwd} secureTextEntry/>
+            <View style={{flexDirection:'row',gap:8,marginTop:8}}>
+              <TouchableOpacity style={[ss.btn,{flex:1,backgroundColor:C.btnGray}]} onPress={()=>setResetStep('request')}><Text style={{color:C.btnGrayTxt,fontWeight:'600',fontSize:15}}>Back</Text></TouchableOpacity>
+              <TouchableOpacity style={[ss.btn,ss.btnBlue,{flex:1},resetLoading&&ss.btnOff]} onPress={submitReset} disabled={resetLoading}>
+                {resetLoading?<ActivityIndicator color="#fff"/>:<Text style={ss.btnTxt}>Reset & Sign In</Text>}
+              </TouchableOpacity>
+            </View>
+          </>}
+        </View></View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -979,7 +923,7 @@ const StatsModal = ({memberId,memberName,tournamentId,onClose}:{memberId:number;
     const earlyAvg=ds.slice(0,3).reduce((s,d)=>s+d.dayScore,0)/(ds.slice(0,3).length||1);
     const trend=ds.length<3?'stable':recentAvg>earlyAvg+0.05?'improving':recentAvg<earlyAvg-0.05?'declining':'stable';
     try{
-      const token=await AsyncStorage.getItem('token');
+      const token=_getClerkToken ? await _getClerkToken() : null;
       const res=await fetch(`${API_URL}/ai/analyze`,{
         method:'POST',
         headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},
@@ -3602,6 +3546,8 @@ function AppInner() {
     return ()=>sub.remove();
   },[]);
 
+  const {isLoaded: authLoaded, isSignedIn, signOut} = useAuth();
+
   useEffect(()=>{
     const boot = async () => {
       // Replay queued offline mutations
@@ -3624,25 +3570,32 @@ function AppInner() {
       wakePing().then(ok => {
         if (!ok) setWakeMsg('Server slow — try again if issues');
       });
-
-      // Restore session from storage immediately
-      try {
-        const [[,tok],[,u]] = await AsyncStorage.multiGet(['token','user']);
-        if (tok && u) {
-          try {
-            const parsed = JSON.parse(u);
-            if (parsed && parsed.id && parsed.username) {
-              setUser(parsed);
-            }
-          } catch {
-            await AsyncStorage.multiRemove(['token','user']);
-          }
-        }
-      } catch {}
-      setBooting(false);
     };
     boot();
   },[]);
+
+  // Once Clerk confirms a session, fetch (and auto-provision) our Player
+  // profile — mirrors the web demo's SyncUser component, just via the
+  // existing /players/me endpoint instead of a dedicated /api/me.
+  useEffect(()=>{
+    if (!authLoaded) return;
+    if (!isSignedIn) { setUser(null); setBooting(false); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const profile = await api('/players/me');
+        if (!cancelled) setUser({
+          id: profile.id, username: profile.username, email: profile.email,
+          displayName: profile.displayName, proficiency: profile.proficiency,
+        });
+      } catch {
+        // Session exists but profile fetch failed (server waking up, etc.) — retry on next mount
+      } finally {
+        if (!cancelled) setBooting(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  },[authLoaded, isSignedIn]);
 
   // ── PUSH NOTIFICATIONS SETUP ──────────────────────────────────────────────
   useEffect(()=>{
@@ -3662,26 +3615,12 @@ function AppInner() {
         // Get FCM token and register with backend
         const fcmToken = await messaging().getToken();
         if (fcmToken) {
-          const authToken = await AsyncStorage.getItem('token');
-          if (authToken) {
-            await fetch(`${API_URL}/players/me/fcm-token`, {
-              method: 'PUT',
-              headers: {'Content-Type':'application/json', Authorization:`Bearer ${authToken}`},
-              body: JSON.stringify({fcmToken}),
-            }).catch(()=>{});
-          }
+          api('/players/me/fcm-token', {method:'PUT', body: JSON.stringify({fcmToken})}).catch(()=>{});
         }
 
         // Handle token refresh
         const unsubRefresh = messaging().onTokenRefresh(async newToken => {
-          const authToken = await AsyncStorage.getItem('token');
-          if (authToken) {
-            await fetch(`${API_URL}/players/me/fcm-token`, {
-              method: 'PUT',
-              headers: {'Content-Type':'application/json', Authorization:`Bearer ${authToken}`},
-              body: JSON.stringify({fcmToken: newToken}),
-            }).catch(()=>{});
-          }
+          api('/players/me/fcm-token', {method:'PUT', body: JSON.stringify({fcmToken: newToken})}).catch(()=>{});
         });
 
         // Handle foreground notifications (show as Alert, but not for own chat)
@@ -3702,24 +3641,18 @@ function AppInner() {
     setupNotifications();
   },[]);
 
-  const login=(u:User)=>{
-    AsyncStorage.setItem('user',JSON.stringify(u));
-    setUser(u);
-  };
   const logout=async()=>{
-    setUser(null);
     setSelected(null);
-    // Only remove auth token — keep cache so data loads faster after re-login
-    await AsyncStorage.removeItem('token');
-    await AsyncStorage.removeItem('user');
+    await signOut();
+    setUser(null);
   };
 
-  // Wire up global 401 handler — auto-logout if token expires mid-session
+  // Wire up global 401 handler — Clerk session is invalid, sign out locally
   useEffect(()=>{
     setAuthFailHandler(()=>{ logout(); });
   },[]);
 
-  if(booting) return(
+  if(!authLoaded || booting) return(
     <View style={{flex:1,alignItems:'center',justifyContent:'center',backgroundColor:C.bg}}>
       <Text style={{fontSize:64}}>🏓</Text>
       <Text style={{fontSize:22,fontWeight:'900',color:C.text,marginTop:12}}>TT Platform</Text>
@@ -3728,8 +3661,8 @@ function AppInner() {
       <Text style={{color:C.text3,fontSize:11,marginTop:6,textAlign:'center',paddingHorizontal:40}}>First load takes ~30s on free server</Text>
     </View>
   );
-  const updateUser=(u:User)=>{ setUser(u); AsyncStorage.setItem('user',JSON.stringify(u)); };
-  if(!user) return <AuthScreen onLogin={login}/>;
+  const updateUser=(u:User)=>{ setUser(u); };
+  if(!isSignedIn || !user) return <AuthScreen/>;
   if(selected) return <DetailScreen t={selected} user={user} onBack={()=>setSelected(null)} onLogout={logout}/>;
   return <>
     <TournamentsScreen user={user} onSelect={setSelected} onLogout={logout} onSettings={()=>setShowSettings(true)}/>
@@ -3744,9 +3677,14 @@ function AppInner() {
 
 export default function App() {
   return (
-    <ThemeProvider>
-      <AppInner/>
-    </ThemeProvider>
+    <ClerkProvider publishableKey={CLERK_PUBLISHABLE_KEY} tokenCache={tokenCache}>
+      <ClerkLoaded>
+        <ClerkTokenBridge/>
+        <ThemeProvider>
+          <AppInner/>
+        </ThemeProvider>
+      </ClerkLoaded>
+    </ClerkProvider>
   );
 }
 
